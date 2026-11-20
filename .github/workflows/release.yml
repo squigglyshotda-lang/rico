@@ -1,8 +1,12 @@
 name: Release
 
+# A release is made whenever the version in game/project.godot has release notes
+# (release-notes/vX.Y.Z.md) and no GitHub release exists for it yet.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["release-notes/**", "game/project.godot"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,9 +16,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Work out version
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -oP '^config/version="\K[^"]+' game/project.godot)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ ! -f "release-notes/v$VERSION.md" ]; then
+            echo "No release-notes/v$VERSION.md yet, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install NSIS
+        if: steps.v.outputs.skip != 'true'
         run: sudo apt-get update -q && sudo apt-get install -y -q nsis
       - name: Cache downloads
+        if: steps.v.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -22,12 +42,12 @@ jobs:
             ~/.local/share/godot/export_templates
           key: rico-deps-godot441-whisper176-llama12590-lhm096
       - name: Build installer
-        run: bash ci/build.sh "${GITHUB_REF_NAME#v}"
+        if: steps.v.outputs.skip != 'true'
+        run: bash ci/build.sh "${{ steps.v.outputs.version }}"
       - name: Publish release
+        if: steps.v.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          NOTES="release-notes/${GITHUB_REF_NAME}.md"
-          [ -f "$NOTES" ] || echo "Rico ${VERSION}" > "$NOTES"
-          gh release create "$GITHUB_REF_NAME" "build/Rico-Setup-${VERSION}.exe" --title "Rico ${VERSION}" --notes-file "$NOTES"
+          V="${{ steps.v.outputs.version }}"
+          gh release create "v$V" "build/Rico-Setup-$V.exe" --target "$GITHUB_SHA" --title "Rico $V" --notes-file "release-notes/v$V.md"
