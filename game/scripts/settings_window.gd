@@ -17,6 +17,8 @@ var _nav_buttons: Array = []
 var reminders: Node
 var voice: Node
 var pc: Node
+var updater: Node
+var _update_label: Label
 var mem: Node
 var brain: Node
 var _usage_label: Label
@@ -483,6 +485,35 @@ func _build_rico() -> void:
 	_slider(v, "Sound volume", "volume", 0.0, 1.0)
 	_heading(v, "Startup")
 	_check(v, "Start Rico when Windows starts", "start_with_windows", func(on): _set_autostart(on))
+	_heading(v, "Updates")
+	_label(v, "You're on Rico v%s." % ProjectSettings.get_setting("application/config/version", "?"), true)
+	_check(v, "Update automatically (downloads quietly, installs next time Rico starts or while you're away)", "auto_update")
+	var uh := HBoxContainer.new()
+	uh.add_theme_constant_override("separation", 10)
+	v.add_child(uh)
+	var chk := Button.new()
+	chk.text = UI.icon("refresh_x") + "  Check now"
+	chk.text = "Check now"
+	chk.pressed.connect(func(): if updater: updater.check_now())
+	uh.add_child(chk)
+	var inst := Button.new()
+	inst.text = "Install downloaded update"
+	inst.theme_type_variation = "Primary"
+	inst.pressed.connect(func():
+		if updater and not updater.pending().is_empty():
+			updater.install_pending()
+		else:
+			set_update_status("No downloaded update waiting."))
+	uh.add_child(inst)
+	_update_label = Label.new()
+	_update_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_update_label.add_theme_color_override("font_color", UI.TEXT_2)
+	v.add_child(_update_label)
+
+
+func set_update_status(t: String) -> void:
+	if _update_label:
+		_update_label.text = t
 
 
 func _set_autostart(on: bool) -> void:

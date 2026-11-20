@@ -16,6 +16,7 @@ const BrainScript := preload("res://scripts/brain.gd")
 const QuickScript := preload("res://scripts/quick.gd")
 const SearchScript := preload("res://scripts/search.gd")
 const UI := preload("res://scripts/ui.gd")
+const UpdaterScript := preload("res://scripts/updater.gd")
 
 signal _approval_answered(result: Dictionary)
 
@@ -28,6 +29,8 @@ var voice
 var reminders
 var settings
 var pc
+var updater
+var _update_waiting := false
 var mem
 var brain
 var quick
@@ -71,6 +74,10 @@ var _user_placed := false
 
 func _ready() -> void:
 	randomize()
+	updater = UpdaterScript.new()
+	add_child(updater)
+	if not OS.has_environment("RICO_SHOT_UI") and updater.install_pending():
+		return   # installer takes over and relaunches Rico
 	var win := get_window()
 	win.title = "Rico"
 	_fit_to_screen()
@@ -140,6 +147,7 @@ func _ready() -> void:
 	settings.reminders = reminders
 	settings.voice = voice
 	settings.pc = pc
+	settings.updater = updater
 	settings.mem = mem
 	settings.brain = brain
 	add_child(settings)
@@ -172,9 +180,54 @@ func _ready() -> void:
 	if OS.has_environment("RICO_SHOT"):
 		_run_shot_test.call_deferred()
 		return
-	get_tree().create_timer(0.9).timeout.connect(func():
-		rico.waving = 2.0
-		_say(Lines.pick(Lines.GREET), 6))
+	updater.update_ready.connect(func(_v): _update_waiting = true)
+	updater.status.connect(func(t): settings.set_update_status(t))
+	_sync_autostart()
+	get_tree().create_timer(0.9).timeout.connect(_first_words)
+
+
+func _first_words() -> void:
+	rico.waving = 2.0
+	var notes: Dictionary = updater.take_update_notes()
+	if not notes.is_empty():
+		var body := String(notes.get("notes", "")).strip_edges()
+		_say("Fresh upgrade: I'm now v%s.%s" % [notes.get("to", "?"), ("\n" + body.left(400)) if body != "" else ""], -1, false, [["dismiss", "Nice"]])
+		return
+	if not Cfg.g("welcomed", false):
+		_welcome(1)
+		return
+	_say(Lines.pick(Lines.GREET), 6)
+
+
+## First-run walkthrough in the bubble.
+func _welcome(step: int) -> void:
+	match step:
+		1: _say("Hi, I'm Rico. A tiny brass bullet who lives on your desktop and does your chores. Quick tour?", -1, false, [["wel2", "Show me"], ["wel_skip", "Skip"]])
+		2:
+			if ai.has_key():
+				_welcome(3)
+				return
+			_say("First, my brain. Paste a Claude API key in Settings and I can chat, help with Godot and Blender, and look after your PC. Without one I still do timers, search and PC jobs.", -1, false, [["wel_key", "Add API key"], ["wel3", "Later"]])
+		3: _say("Shortcuts that work anywhere:\nAlt+Space  search everything\nCtrl+Shift+Space  chat with me\nCtrl+Alt+Space  talk to me\nController: hold View, then A chat, RB search, X talk.", -1, false, [["wel4", "Next"]])
+		4:
+			if brain.installed():
+				_welcome(5)
+				return
+			_say("Want my offline brain? It's a one-off 2 GB download that makes small talk free and private.", -1, false, [["wel_brain", "Download it"], ["wel5", "Not now"]])
+		5:
+			Cfg.s("welcomed", true)
+			_say("That's it. Right-click me for the menu, drag me about, or fling me if you're feeling brave.", 8, false, [["dismiss", "Let's go"]])
+
+
+func _sync_autostart() -> void:
+	if OS.get_name() != "Windows":
+		return
+	var out := []
+	OS.execute("reg", ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "Rico"], out)
+	var on := "Rico" in "".join(out)
+	if on != bool(Cfg.g("start_with_windows", false)):
+		Cfg.data.start_with_windows = on
+		Cfg.save()
 
 
 func _run_dodge_test() -> void:
@@ -1279,6 +1332,21 @@ func _on_bubble_action(id: String) -> void:
 		_pc_busy_say("Closing %s..." % name)
 		_say(await pc.close_apps([name]), 6)
 		return
+	if id.begins_with("wel"):
+		match id:
+			"wel_skip":
+				Cfg.s("welcomed", true)
+				bubble.hide_bubble()
+			"wel_key":
+				_open_settings(0)
+				_welcome(3)
+			"wel_brain":
+				_start_brain_download()
+				await get_tree().create_timer(3.0).timeout
+				_welcome(5)
+			_:
+				_welcome(int(id.substr(3)))
+		return
 	if id == "brain_dl":
 		_start_brain_download()
 		return
@@ -1526,6 +1594,9 @@ func _process(delta: float) -> void:
 		_say(_next_tip(_fg_kind), 9)
 
 	_poll_controller()
+	if _update_waiting and _mouse_still > 900.0 and not bubble.is_open() and not search.is_open() and not ai.busy and not _approval_pending:
+		_update_waiting = false
+		updater.install_pending()
 	_report_timer -= delta
 	if _report_timer <= 0:
 		_report_timer = 60.0

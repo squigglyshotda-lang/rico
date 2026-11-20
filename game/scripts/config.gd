@@ -33,6 +33,8 @@ var data := {
 	"routines": [],
 	"last_undo": {},
 	"daily_cap_gbp": 0.0,
+	"auto_update": true,
+	"welcomed": false,
 	"mini_brain": true,
 	"brain_offered": false,
 }
