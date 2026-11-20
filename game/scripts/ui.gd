@@ -23,7 +23,7 @@ const ICONS := {
 	"bell": 0xea35, "rocket": 0xec45, "zip": 0xed4e, "cube": 0xfa97, "code": 0xea77, "movie": 0xeafa,
 	"music": 0xeafc, "download": 0xea96, "info": 0xeac5, "alert": 0xea06, "copy": 0xea7a, "grid": 0xedba,
 	"activity": 0xed23, "coin": 0xeb82, "power": 0xeb0d, "desktop": 0xea89, "keyboard": 0xebd6,
-	"history": 0xebea, "notes": 0xeb6e, "user": 0xef68,
+	"history": 0xebea, "gamepad": 0xf1d2, "trophy": 0xeb45, "bulb": 0xea51, "notes": 0xeb6e, "user": 0xef68,
 }
 
 static var _theme: Theme

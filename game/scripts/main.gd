@@ -17,6 +17,13 @@ const QuickScript := preload("res://scripts/quick.gd")
 const SearchScript := preload("res://scripts/search.gd")
 const UI := preload("res://scripts/ui.gd")
 const UpdaterScript := preload("res://scripts/updater.gd")
+const GamesScript := preload("res://scripts/games.gd")
+const BambuScript := preload("res://scripts/bambu.gd")
+const ShopScript := preload("res://scripts/printshop.gd")
+const ShopWindowScript := preload("res://scripts/printshop_window.gd")
+const MoneyScript := preload("res://scripts/money.gd")
+const MoneyWindowScript := preload("res://scripts/money_window.gd")
+const PrintHelp := preload("res://scripts/print_help.gd")
 
 signal _approval_answered(result: Dictionary)
 
@@ -30,6 +37,23 @@ var reminders
 var settings
 var pc
 var updater
+var games
+var bambu
+var shop
+var shop_win
+var money
+var money_win
+var _activity_t := 0.0
+var _presence := 1.0
+var _ghost := 0.0
+var _hover_still := 0.0
+var _fs_hidden := false
+var _fs_queue: Array = []
+var _print_started := 0.0
+var _minute_timer := 5.0
+var _game_time := 0.0
+var _game_tip_timer := 900.0
+var _fetching_tips := false
 var _update_waiting := false
 var mem
 var brain
@@ -92,6 +116,10 @@ func _ready() -> void:
 	ai = AiScript.new(); add_child(ai)
 	voice = VoiceScript.new(); add_child(voice)
 	reminders = RemindersScript.new(); add_child(reminders)
+	games = GamesScript.new(); add_child(games)
+	bambu = BambuScript.new(); add_child(bambu)
+	shop = ShopScript.new(); add_child(shop)
+	money = MoneyScript.new(); add_child(money)
 	pc = PcScript.new(); add_child(pc)
 	pc.approve = _request_approval
 	mem = MemScript.new(); add_child(mem)
@@ -148,6 +176,7 @@ func _ready() -> void:
 	settings.voice = voice
 	settings.pc = pc
 	settings.updater = updater
+	settings.games = games
 	settings.mem = mem
 	settings.brain = brain
 	add_child(settings)
@@ -155,6 +184,21 @@ func _ready() -> void:
 	settings.test_requested.connect(_test_api)
 	settings.brain_download_requested.connect(_start_brain_download)
 	reminders.list_changed.connect(settings.refresh_reminders)
+	shop_win = ShopWindowScript.new()
+	shop_win.shop = shop
+	shop_win.bambu = bambu
+	add_child(shop_win)
+	shop_win.build()
+	shop_win.refresh_rates_requested.connect(_refresh_rates)
+	shop_win.printer_settings_changed.connect(func(): bambu.reconnect())
+	shop_win.sold.connect(func(nm, price): money.add("Sold: " + nm, price, "", "Income", "shop"); _say("Ka-ching! £%.2f logged for %s." % [price, nm], 5))
+	money_win = MoneyWindowScript.new()
+	money_win.money = money
+	add_child(money_win)
+	money_win.build()
+	bambu.connection.connect(func(t): shop_win.set_printer_status(t))
+	bambu.event.connect(_on_print_event)
+	get_window().files_dropped.connect(_on_files_dropped)
 	settings.refresh_reminders()
 	Cfg.changed.connect(_on_cfg_changed)
 
@@ -166,10 +210,16 @@ func _ready() -> void:
 		_run_dodge_test.call_deferred()
 		return
 	if OS.has_environment("RICO_ROUTER_TEST"):
-		for q in ["why is my pc so slow", "tidy my downloads", "tell me a joke", "how do I make a one-way platform in godot", "think hard about my game's economy", "install obs for me", "what's your favourite colour", "hello", "remind me in 10 minutes to stretch", "remember that I use Blender 4.2", "open blender", "50 usd in gbp", "game mode on"]:
+		for q in ["spent £24.50 on petg", "sold a brio crossing for £8.99 on etsy", "budget", "how much left for groceries", "my print is stringing a lot", "the corners are lifting on my petg print", "price 120g of petg 5 hours", "find me a model of a brio crossing", "subscriptions", "why is my pc so slow", "tidy my downloads", "tell me a joke", "how do I make a one-way platform in godot", "think hard about my game's economy", "install obs for me", "what's your favourite colour", "hello", "remind me in 10 minutes to stretch", "remember that I use Blender 4.2", "open blender", "50 usd in gbp", "game mode on"]:
 			var l: String = await _local_command(q)
 			print(q, " | local=", "HANDLED" if l == HANDLED else l.left(40), " | groups=", ai.groups_for(q), " hard=", ai.is_hard(q), " claude=", ai.needs_tools(q) or ai.is_hard(q) or _wants_claude(q))
 		get_tree().quit()
+		return
+	if OS.has_environment("RICO_SHOT_SHOP"):
+		_run_shop_shot.call_deferred()
+		return
+	if OS.has_environment("RICO_SHOT_LOOK"):
+		_run_look_shot.call_deferred()
 		return
 	if OS.has_environment("RICO_SHOT_UI"):
 		_run_ui_shot.call_deferred()
@@ -259,6 +309,66 @@ func _run_dodge_test() -> void:
 	tree.quit()
 
 
+func _run_shop_shot() -> void:
+	var out := OS.get_environment("RICO_SHOT_SHOP")
+	_shot_mode = true
+	Cfg.data.volume = 0.0
+	Cfg.data.welcomed = true
+	_open_shop()
+	await shop_win.set_manual("PETG", 120.0, 5.0, "Brio crossing")
+	shop_win._pack_checks["Small box"].button_pressed = true
+	shop_win._labour.value = 15
+	await get_tree().create_timer(1.0).timeout
+	shop_win.get_texture().get_image().save_png(out.path_join("shop.png"))
+	shop_win.hide()
+	for d in [["2026-11-02", "TESCO STORES 2041", -46.2], ["2026-11-03", "NETFLIX.COM", -10.99], ["2026-11-05", "STEAM PURCHASE", -24.99], ["2026-11-07", "BAMBU LAB EU", -39.98], ["2026-11-09", "DELIVEROO", -21.5], ["2026-11-12", "SAINSBURYS", -38.4], ["2026-11-14", "TFL TRAVEL CH", -12.6], ["2026-11-15", "SALARY ACME LTD", 2150.0], ["2026-11-18", "AMAZON MKTPLACE", -58.0]]:
+		money.add(d[1], d[2], d[0])
+	money.add_bill("Netflix", 10.99, 3, "Subscriptions")
+	money.add_bill("Council tax", 142.0, 1, "Bills")
+	_open_money()
+	await get_tree().create_timer(1.0).timeout
+	money_win.get_texture().get_image().save_png(out.path_join("money.png"))
+	money_win.hide()
+	rico.scale = Vector2.ONE * 2.0
+	_dock()
+	rico.position = Vector2(300, 300)
+	rico.print_progress = 0.42
+	await get_tree().create_timer(0.6).timeout
+	get_viewport().get_texture().get_image().save_png(out.path_join("docked.png"))
+	get_tree().quit()
+
+
+func _run_look_shot() -> void:
+	var out := OS.get_environment("RICO_SHOT_LOOK")
+	_shot_mode = true
+	Cfg.data.volume = 0.0
+	Cfg.data.wander = false
+	Cfg.data.welcomed = true
+	bubble.hide_bubble()
+	rico.scale = Vector2.ONE * 2.0
+	rico.state = RicoScript.State.IDLE
+	rico.position.x = 500
+	rico.bounds = Rect2(0, 0, 1000, 700)
+	rico.position.y = 700 - rico.half_extents().y
+	rico._fidget_timer = 999
+	var shots := [
+		["smug", func(): rico.set_mood("smug", 99); rico.look_at_pos = Vector2(900, 200)],
+		["talk", func(): rico.talking = true; rico._gesture = "point"; rico.look_at_pos = Vector2(700, 100)],
+		["happy", func(): rico.talking = false; rico._gesture = ""; rico.set_mood("happy", 99); rico.look_at_pos = Vector2(500, 300)],
+		["shock", func(): rico.set_mood("shock", 99); rico.look_at_pos = Vector2(100, 300)],
+		["think", func(): rico.set_mood("think", 99); rico.thinking = true],
+		["shrug", func(): rico.thinking = false; rico.set_mood("smug", 99); rico._gesture = "shrug"; rico._gesture_t = 0.0; rico.look_at_pos = Vector2(500, 500)],
+		["sleep", func(): rico._gesture = ""; rico.sleep()],
+	]
+	for sh in shots.slice(0, 7 if not OS.has_environment("RICO_FEW") else 3):
+		sh[1].call()
+		rico._gesture_t = 0.0
+		await get_tree().create_timer(0.8).timeout
+		rico._glitch = 0.0
+		get_viewport().get_texture().get_image().save_png(out.path_join("holo_%s.png" % sh[0]))
+	get_tree().quit()
+
+
 func _run_ui_shot() -> void:
 	var out := OS.get_environment("RICO_SHOT_UI")
 	Cfg.data.volume = 0.0
@@ -309,10 +419,10 @@ func _run_ui_shot() -> void:
 	await tree.create_timer(0.6).timeout
 	menu.get_texture().get_image().save_png(out.path_join("u_menu.png"))
 	menu.hide()
-	_open_settings(7)
+	_open_settings(8)
 	await tree.create_timer(1.0).timeout
 	settings.get_texture().get_image().save_png(out.path_join("u_settings.png"))
-	_open_settings(5)
+	_open_settings(6)
 	await tree.create_timer(1.0).timeout
 	settings.get_texture().get_image().save_png(out.path_join("u_settings_pc.png"))
 	tree.quit()
@@ -436,6 +546,8 @@ func _build_menu() -> void:
 	pc_menu.id_pressed.connect(_on_pc_menu)
 	menu.add_submenu_node_item(UI.icon("cpu") + "   PC", pc_menu)
 	menu.add_item(UI.icon("bell") + "   Reminders", 2)
+	menu.add_item(UI.icon("cube") + "   Print Shop", 10)
+	menu.add_item(UI.icon("coin") + "   Money", 11)
 	menu.add_separator()
 	menu.add_item(UI.icon("settings") + "   Settings", 3)
 	menu.add_item(UI.icon("history") + "   New conversation", 4)
@@ -509,6 +621,8 @@ func _on_menu(id: int) -> void:
 				_say("I didn't have a spot saved for this app anyway.", 4)
 		8: _open_search()
 		9: _quit()
+		10: _open_shop()
+		11: _open_money()
 
 
 func _build_tray() -> void:
@@ -527,8 +641,9 @@ func _open_settings(tab := 0) -> void:
 	settings.tabs.current_tab = tab
 	settings.refresh_pc()
 	settings.refresh_log()
-	if tab == 5:
+	if tab == 6:
 		settings.refresh_startup()
+	settings.refresh_games()
 	settings.refresh_reminders()
 	settings.refresh_projects()
 	settings.popup_centered()
@@ -573,6 +688,8 @@ func _notification(what: int) -> void:
 # ------------------------------------------------------------------ talking
 
 func _say(text: String, timeout := 6.0, keep_chat := false, buttons: Array = []) -> void:
+	if rico.docked or _ghost > 0:
+		_wake_up()
 	if not keep_chat and bubble.chat_mode and buttons.is_empty():
 		keep_chat = true
 	bubble.chat_mode = keep_chat
@@ -585,8 +702,8 @@ func _open_chat() -> void:
 	rico.wake()
 	DisplayServer.window_move_to_foreground()
 	rico.waving = 1.2
-	if not ai.has_key():
-		bubble.open_chat(Lines.NO_KEY)
+	if not ai.has_key() and not brain.enabled():
+		bubble.open_chat(_no_brain_line())
 	elif bubble.is_open() and bubble.chat_mode:
 		bubble.open_chat()
 	else:
@@ -646,7 +763,15 @@ func _handle_request(text: String) -> void:
 	elif brain.downloading:
 		_say("Still downloading my offline brain (%d%%). Give me a minute." % brain.download_percent(), -1, true)
 	else:
-		_say(Lines.NO_KEY, -1, true)
+		_say(_no_brain_line(), -1, true, [["brain_dl", "Download my brain"]] if Cfg.g("local_only", true) and not brain.installed() else [])
+
+
+func _no_brain_line() -> String:
+	if Cfg.g("local_only", true):
+		if brain.downloading:
+			return "My brain's still downloading (%d%%). Meanwhile I can do timers, search, maths, PC jobs, prices and money stuff." % brain.download_percent()
+		return "I'm in Local-only mode, so my brain lives on your PC and needs a one-off 2 GB download. Until then I still do timers, search, maths, PC jobs, prices and money stuff."
+	return Lines.NO_KEY
 
 
 var _offer_brain_later := false
@@ -665,7 +790,9 @@ func _wants_claude(text: String) -> bool:
 
 
 func _brain_messages(text: String) -> Array:
-	var sys := "You are Rico, a cheeky, sarcastic but kind cartoon living bullet who lives on the user's Windows desktop. The user is Pierre, an indie game developer and artist. Reply in 1-2 short sentences, plain text, no emoji, no lists."
+	var sys := "You are Rico, a tiny holographic brass bullet who lives on Pierre's Windows desktop. Pierre games, illustrates, designs games (Godot, Blender), does UX/UI design (Figma) and 3D prints on a Bambu Lab H2D. You are cheeky, sarcastic and funny with British humour, but warm and genuinely helpful: open with a quick quip, then give practical, specific help. Keep it to 1-3 short sentences unless he asks for steps; plain text, no emoji. You run fully offline, so you cannot browse or check the latest patches. If you're not sure of a game-specific detail, say so honestly with a joke instead of making something up. For spoilers, hint first."
+	if games.current() != "":
+		sys += " He's currently playing %s." % games.current()
 	var facts: Array = mem.relevant(text, 4)
 	if not facts.is_empty():
 		sys += " Things you know: " + "; ".join(facts) + "."
@@ -759,6 +886,13 @@ func _run_tool(name: String, input: Dictionary) -> String:
 			return "PC tools are switched off (Settings > PC) or this isn't Windows."
 		return await _run_pc_tool(name, input)
 	match name:
+		"game_checklist_set":
+			return games.set_list(String(input.get("game", games.current())), String(input.get("title", "Checklist")), input.get("items", []))
+		"game_checklist_tick":
+			var tr: String = games.tick(String(input.get("game", games.current())), String(input.get("item", "")), bool(input.get("done", true)))
+			return tr if tr != "" else "No matching checklist item."
+		"game_checklist_show":
+			return games.show(String(input.get("game", games.current())))
 		"remember_fact":
 			mem.add_fact(String(input.get("fact", "")))
 			return "Saved to local memory."
@@ -920,7 +1054,7 @@ func _local_command(text: String) -> String:
 	# search
 	re.compile("^(?:search|find|look for|spotlight)(?: for)? (.+)$")
 	mm = re.search(t)
-	if mm and not ai.needs_tools(t):
+	if mm and not ai.needs_tools(t) and not ("model" in t or "stl" in t or "to print" in t):
 		_open_search(mm.get_string(1))
 		return HANDLED
 	# open projects or apps
@@ -986,6 +1120,115 @@ func _local_command(text: String) -> String:
 			_pc_busy_say("Looking at your %s..." % mm.get_string(1))
 			_say(await pc.tidy(mm.get_string(1), mm.get_string(2) if mm.get_string(2) != "" else "type"), 6)
 			return HANDLED
+	# games
+	re.compile("^(?:i'm|im|i am) (?:now )?playing (.+)$")
+	mm = re.search(t)
+	if mm:
+		games.override = text.strip_edges().substr(text.to_lower().find(mm.get_string(1))).trim_suffix(".")
+		ai.game = games.current()
+		return Lines.pick(Lines.GAME_SET) % games.override
+	if t in ["i'm not playing anything", "stop playing", "not playing", "done gaming", "finished playing"]:
+		games.override = ""
+		ai.game = games.current()
+		return "Back to work then. Probably."
+	if games.current() != "":
+		re.compile("^(?:i )?(?:got|found|collected|done|finished|completed) (?:the )?(.+)$")
+		mm = re.search(t)
+		if mm:
+			var r: String = games.tick(games.current(), mm.get_string(1))
+			if r != "":
+				return Lines.pick(["Nice. ", "Look at you go. ", "One down. "]) + r
+		if t in ["what's left", "whats left", "what is left", "checklist", "show checklist", "what collectibles are left", "what have i got left"]:
+			return games.show(games.current())
+		if t in ["tip", "game tip", "give me a tip", "any tips"]:
+			var tip: String = games.next_tip(games.current())
+			if tip != "":
+				return tip
+	# ---- 3D printing
+	if t in ["print shop", "open print shop", "printshop", "quote", "pricing"]:
+		_open_shop()
+		return HANDLED
+	if t in ["how's my print", "hows my print", "how is my print", "print status", "printer status", "is my print done", "how long left on my print", "how long's left"]:
+		return bambu.status_text()
+	if "maintenance" in t and ("printer" in t or "due" in t or t == "maintenance"):
+		_open_shop()
+		shop_win.tabs.current_tab = 6
+		return "Opened your printer's maintenance list. Anything glowing gold is overdue."
+	re.compile("^(?:find|search for|look for|get me)(?: me)? (?:a |an |some )?(?:3d )?(?:printable )?(?:models?|stls?|prints?)(?: of| for)? (.+)$")
+	mm = re.search(t)
+	if not mm:
+		re.compile("^(?:find|search for)(?: me)? (?:a |an )?(.+?) (?:model|stl|to print|3d model)s?$")
+		mm = re.search(t)
+	if mm:
+		for u in PrintHelp.model_search_urls(mm.get_string(1)):
+			OS.shell_open(u)
+		return "Opened MakerWorld, Printables and Thingiverse searches for \"%s\" in your browser. Pick a good one and drop the 3MF on me for a price." % mm.get_string(1)
+	var diag: String = PrintHelp.diagnose(t)
+	if diag != "":
+		return diag
+	re.compile("(?:price|quote|charge|sell).*?(\\d+(?:\\.\\d+)?)\\s*g(?:rams?)?(?: of)?\\s*([a-z ]*?)\\s*(?:,|and|for|at)?\\s*(\\d+(?:\\.\\d+)?)\\s*(h|hr|hrs|hours?|m|mins?|minutes?)\\b")
+	mm = re.search(t)
+	if mm:
+		var grams := float(mm.get_string(1))
+		var mat := mm.get_string(2).strip_edges()
+		if mat == "": mat = "PLA"
+		var hrs := float(mm.get_string(3)) / (60.0 if mm.get_string(4).begins_with("m") else 1.0)
+		_open_shop()
+		await shop_win.set_manual(mat, grams, hrs)
+		var q: Dictionary = shop.quote(shop_win._job())
+		return Lines.pick(["Pricing gun loaded. ", "Right then. ", "Let's make some money. "]) + shop.text_summary(q)
+	# ---- money (all local)
+	if t in ["money", "open money", "finances", "my finances", "budget window"]:
+		_open_money()
+		return HANDLED
+	re.compile("^(?:i )?(?:spent|paid|bought .* for) £?(\\d+(?:\\.\\d{1,2})?)(?: quid| pounds)?(?: on| for| at)? ?(.*)$")
+	mm = re.search(t)
+	if mm:
+		var amt := float(mm.get_string(1))
+		var what := mm.get_string(2).strip_edges()
+		var tx: Dictionary = money.add(_cap1(what) if what != "" else "Spending", -amt)
+		var left: String = money.category_left(tx.cat)
+		return Lines.pick(["Logged. ", "Noted, big spender. ", "Into the ledger it goes. "]) + "£%.2f on %s (%s). %s" % [amt, what if what != "" else "something", tx.cat, left]
+	re.compile("^(?:i )?sold (?:a |an |the |my )?(.+?) for £?(\\d+(?:\\.\\d{1,2})?)(?: on (.+))?$")
+	mm = re.search(t)
+	if mm:
+		var amt2 := float(mm.get_string(2))
+		money.add("Sold: " + _cap1(mm.get_string(1)) + ((" (" + mm.get_string(3) + ")") if mm.get_string(3) != "" else ""), amt2, "", "Income", "shop")
+		return Lines.pick(["Ka-ching! ", "Business is booming. ", "Look at you, entrepreneur. "]) + "Logged £%.2f income for %s." % [amt2, mm.get_string(1)]
+	re.compile("^(?:i )?(?:got paid|earned|received) £?(\\d+(?:\\.\\d{1,2})?)(?: (?:for|from) (.+))?$")
+	mm = re.search(t)
+	if mm:
+		money.add(_cap1(mm.get_string(2)) if mm.get_string(2) != "" else "Income", float(mm.get_string(1)), "", "Income")
+		return "Logged £%.2f coming in. Don't spend it all on filament." % float(mm.get_string(1))
+	if t in ["budget", "my budget", "how's my budget", "hows my budget", "how much have i spent", "how much have i spent this month", "spending", "how am i doing for money", "money check"]:
+		return money.month_summary() + "\n" + Lines.pick(["Proud of you. Mostly.", "Your wallet says hi. Weakly.", "Not bad. I've seen worse. I've also seen better."])
+	re.compile("^how much (?:is |have i got |do i have )?left (?:for|in|on) (.+)$")
+	mm = re.search(t)
+	if mm:
+		var cat: String = money.find_category(mm.get_string(1))
+		return money.category_left(cat) if cat != "" else "I don't have a category called that. Check Money > Budget."
+	if t in ["bills", "bills this week", "what bills are due", "upcoming bills", "bills due"]:
+		var due: Array = money.due_within(7)
+		if due.is_empty():
+			return "Nothing due in the next week. Enjoy it while it lasts."
+		return "Due this week:\n" + "\n".join(due.map(func(b): return "%s £%.2f on %s" % [b.name, float(b.amount), money.next_due(b)]))
+	if t in ["subscriptions", "my subscriptions", "what am i subscribed to", "how much do i spend on subscriptions"]:
+		var subs: Array = money.data.bills.filter(func(b): return b.cat == "Subscriptions")
+		if subs.is_empty():
+			var found: Array = money.detect_subscriptions()
+			return "None tracked yet. %s" % ("I spotted %d regular payments in your statements: see Money > Bills." % found.size() if not found.is_empty() else "Add them in Money > Bills or import a bank CSV.")
+		var tot: float = money.subscriptions_total()
+		var roast := ""
+		var streams := subs.filter(func(b): return ["netflix", "disney", "prime", "now tv", "paramount", "apple tv", "youtube"].any(func(k): return k in String(b.name).to_lower())).size()
+		if streams >= 3:
+			roast = " Also, %d streaming services? You have one pair of eyes." % streams
+		return "%d subscriptions, £%.2f a month (£%.0f a year).%s" % [subs.size(), tot, tot * 12, roast]
+	re.compile("^add (?:a )?(?:bill|subscription) (.+?) £?(\\d+(?:\\.\\d{1,2})?)(?: on the (\\d{1,2})(?:st|nd|rd|th)?)?$")
+	mm = re.search(t)
+	if mm:
+		var sub := "subscription" in t
+		money.add_bill(_cap1(mm.get_string(1)), float(mm.get_string(2)), int(mm.get_string(3)) if mm.get_string(3) != "" else 1, "Subscriptions" if sub else "Bills")
+		return "Added. I'll nudge you the day before it's due."
 	# Rico himself
 	if t in ["hide", "go away", "hide rico", "shoo"]:
 		_hide_for(30 * 60)
@@ -1075,9 +1318,9 @@ func _on_pc_menu(id: int) -> void:
 						suggest.append(p.name)
 				_say(await pc.perf_mode_on(suggest), 8)
 		3: _flow_health(false)
-		4: _open_settings(5)
+		4: _open_settings(6)
 		5: _say(await pc.undo_last(), 5)
-		6: _open_settings(6)
+		6: _open_settings(7)
 		_:
 			if id >= 100:
 				var routines: Array = Cfg.g("routines", [])
@@ -1197,11 +1440,14 @@ func _search_rico_items() -> Array:
 			items.append({"title": "Run routine: " + String(Cfg.g("routines")[i].name), "subtitle": "Routine", "id": "pc:%d" % (100 + i), "keywords": "routine"})
 	for i in Cfg.g("projects", []).size():
 		items.append({"title": String(Cfg.g("projects")[i].name), "subtitle": "Project · " + String(Cfg.g("projects")[i].path), "id": "proj:%d" % i, "keywords": "project open"})
-	var tabs := ["Chat", "Voice", "Reminders", "Projects", "Rico", "PC", "Activity", "Usage", "Help"]
+	var tabs := ["Chat", "Voice", "Reminders", "Projects", "Rico", "Games", "PC", "Activity", "Usage", "Help"]
 	for i in tabs.size():
 		items.append({"title": "Settings: " + tabs[i], "subtitle": "Rico settings", "id": "set:%d" % i, "keywords": "settings preferences options"})
 	items.append({"title": "Reminders", "subtitle": "%d pending" % reminders.pending().size(), "id": "set:2", "keywords": "timer alarm remind"})
 	items.append({"title": "Hide Rico for 30 minutes", "subtitle": "Rico", "id": "hide", "keywords": "hide away"})
+	items.append({"title": "Print Shop", "subtitle": "Quotes, products, shipping, printer", "id": "shop", "keywords": "3d print price quote sell etsy filament bambu h2d"})
+	items.append({"title": "Money", "subtitle": "Budget, bills, subscriptions (stays on this PC)", "id": "money", "keywords": "budget spend bank finance bills subscriptions"})
+	items.append({"title": "Printer status", "subtitle": "Your Bambu H2D", "id": "printer", "keywords": "print progress h2d bambu"})
 	return items
 
 
@@ -1214,7 +1460,13 @@ func _on_search_ask(t: String) -> void:
 
 
 func _on_search_action(id: String) -> void:
-	if id == "chat":
+	if id == "shop":
+		_open_shop()
+	elif id == "money":
+		_open_money()
+	elif id == "printer":
+		_reply(bambu.status_text(), "Local · free")
+	elif id == "chat":
 		_open_chat()
 	elif id == "hide":
 		_hide_for(30 * 60)
@@ -1413,11 +1665,314 @@ func _remember_pc(r: Dictionary) -> void:
 	mem.add_fact("PC: %s, %s; %s GB RAM; GPU %s; drives %s" % [r.get("windows", "Windows"), r.get("cpu", "?"), r.get("ram_total_gb", "?"), ", ".join(gpus), ", ".join(disks)], "pc")
 
 
+# ------------------------------------------------------------------ staying out of the way
+
+func _wake_up() -> void:
+	_activity_t = 0.0
+	_ghost = 0.0
+	if rico.docked:
+		_undock()
+	rico.wake()
+
+
+func _dock() -> void:
+	if rico.docked:
+		return
+	bubble.hide_bubble()
+	rico.docked = true
+	rico.state = RicoScript.State.IDLE
+	rico.rotation = 0
+	rico.position = Vector2(area.end.x - 40, area.end.y - 14)
+	sfx.play("stop", 1.3, 0.5)
+
+
+func _undock() -> void:
+	if not rico.docked:
+		return
+	rico.docked = false
+	var x: float = rico.home_x if rico.home_x >= 0 else area.end.x - 90
+	if _covered(x):
+		x = _free_x()
+	rico.position = Vector2(x, area.end.y - rico.half_extents().y)
+	rico.state = RicoScript.State.IDLE
+	rico.sq = 1.3
+	_presence = 0.5
+	sfx.play("start", 1.2, 0.5)
+
+
+func _no_space() -> bool:
+	if not Cfg.g("dodge", true) or _fg_rect.size.x <= 0:
+		return false
+	var pad: float = rico.half_extents().x + 10.0
+	return _covered(area.position.x + pad) and _covered(area.end.x - pad) and _fg_rect.position.x <= area.position.x + pad * 2 and _fg_rect.end.x >= area.end.x - pad * 2
+
+
+var _shot_mode := false
+
+
+func _update_presence(delta: float, mouse: Vector2) -> void:
+	if _shot_mode:
+		return
+	var busy: bool = bubble.is_open() or search.is_open() or rico.talking or rico.listening or rico.thinking or _approval_pending \
+		or rico.state in [RicoScript.State.DRAG, RicoScript.State.FLY, RicoScript.State.HOP] or _pressing or rico.alerting
+	if busy:
+		_activity_t = 0.0
+	else:
+		_activity_t += delta
+	if busy and rico.docked:
+		_undock()
+	elif not busy and not rico.docked and rico.state in [RicoScript.State.IDLE, RicoScript.State.SLEEP] and (_activity_t > 90.0 or (_no_space() and _activity_t > 3.0)):
+		_dock()
+	# smaller when idle
+	var target := 1.0 if (busy or _activity_t < 20.0) else 0.62
+	_presence = move_toward(_presence, target, delta * 1.5)
+	var sc: float = Cfg.size_scale() * _presence
+	if absf(rico.scale.x - sc) > 0.004:
+		rico.scale = Vector2.ONE * sc
+		if rico.state == RicoScript.State.IDLE and not rico.docked:
+			rico.position.y = rico.bounds.end.y - rico.half_extents().y
+	# fade away when the cursor comes near; hover still for a moment to bring him back
+	var near: bool = not busy and not rico.docked and rico.visual_rect(10.0).grow(60.0).has_point(mouse)
+	if near:
+		if mouse.distance_to(_mouse_prev) < 1.5:
+			_hover_still += delta
+		else:
+			_hover_still = 0.0
+	else:
+		_hover_still = 0.0
+	var ghost_target := 1.0 if (near and _hover_still < 0.8) else 0.0
+	_ghost = move_toward(_ghost, ghost_target, delta * (5.0 if ghost_target > _ghost else 3.0))
+	rico.modulate.a = 1.0 - _ghost
+
+
+func _check_fullscreen(r: Rect2i) -> void:
+	if r.size.x <= 0:
+		_set_fs_hidden(false)
+		return
+	var scr := DisplayServer.window_get_current_screen()
+	var sp := DisplayServer.screen_get_position(scr)
+	var ss := DisplayServer.screen_get_size(scr)
+	var full := r.position.x <= sp.x + 1 and r.position.y <= sp.y + 1 and r.end.x >= sp.x + ss.x - 1 and r.end.y >= sp.y + ss.y - 1
+	_set_fs_hidden(full)
+
+
+func _set_fs_hidden(on: bool) -> void:
+	if on == _fs_hidden:
+		return
+	_fs_hidden = on
+	if on:
+		if get_window().visible:
+			bubble.hide_bubble()
+			get_window().visible = false
+	else:
+		if _hidden_until < 0 and not get_window().visible:
+			get_window().visible = true
+			get_window().always_on_top = true
+			_update_region(true)
+		for t in _fs_queue:
+			_say(t, 12)
+		_fs_queue.clear()
+
+
+# ------------------------------------------------------------------ print shop, money, printer
+
+func _open_shop() -> void:
+	shop_win.refresh_products()
+	shop_win.popup_centered()
+	shop_win.grab_focus()
+
+
+func _open_money() -> void:
+	money_win.popup_centered()
+	money_win.grab_focus()
+	money_win._on_tab(money_win.tabs.current_tab)
+
+
+func _on_files_dropped(files: PackedStringArray) -> void:
+	if files.is_empty():
+		return
+	var f: String = files[0]
+	var ext := f.get_extension().to_lower()
+	_show()
+	_wake_up()
+	if ext in ["3mf", "gcode", "gco", "bgcode"]:
+		_open_shop()
+		var r: Dictionary = await shop_win.load_file(f)
+		if r.get("ok", false):
+			var q: Dictionary = shop.quote(shop_win._job())
+			_reply(Lines.pick(["Ooh, a print job. ", "Right, let's put a price on it. ", "Pricing gun loaded. "]) + shop.text_summary(q), "Local · free")
+		else:
+			_say(String(r.get("note", "I couldn't read that file.")), 7)
+	elif ext == "csv":
+		_open_money()
+		var r2: Dictionary = money_win.import_file(f)
+		_say(("Imported %d transactions. Want the damage report? Say \"budget\"." % r2.added) if r2.ok else String(r2.note), 8)
+	elif ext in ["png", "jpg", "jpeg", "webp"]:
+		_say("I can't look at pictures in Local-only mode. Describe it instead (\"it's stringy\", \"corners lifted\") and I'll diagnose it.", 8)
+	else:
+		_say("Not sure what to do with a .%s file. Drop .3mf/.gcode to price a print, or a bank .csv for Money." % ext, 6)
+
+
+func _refresh_rates(kind: String) -> void:
+	if Cfg.g("local_only", true) or not ai.has_key():
+		OS.shell_open("https://www.royalmail.com/prices" if kind == "shipping" else "https://www.etsy.com/legal/fees/")
+		_say("Local-only mode, so I've opened the official page for you instead. Update the numbers in the table and I'll use them.", 7)
+		return
+	_say("Checking today's %s..." % ("Royal Mail prices" if kind == "shipping" else "selling fees"), -1)
+	var prompt := ""
+	if kind == "shipping":
+		prompt = "Look up today's Royal Mail ONLINE prices (UK) for: Tracked 48 and Tracked 24 Large Letter (up to 750g), Small Parcel (2kg), Medium Parcel (2kg and 10kg), plus 1st and 2nd Class Small Parcel. Reply ONLY with JSON: [{\"name\": \"Royal Mail Tracked 48 Small Parcel\", \"price\": 3.65}, ...] using exactly these name patterns: \"Royal Mail Tracked 48 Large Letter\", \"Royal Mail Tracked 24 Large Letter\", \"Royal Mail Tracked 48 Small Parcel\", \"Royal Mail Tracked 24 Small Parcel\", \"Royal Mail 2nd Class Small Parcel\", \"Royal Mail 1st Class Small Parcel\", \"Royal Mail Tracked 48 Medium Parcel (2 kg)\", \"Royal Mail Tracked 48 Medium Parcel (10 kg)\"."
+	else:
+		prompt = "Look up current UK seller fees for: Etsy (transaction + payment processing + listing, as one percent and one fixed GBP amount per order), eBay UK business sellers (typical final value fee), Shopify Basic UK online card payments, SumUp in person. Reply ONLY with JSON: [{\"name\": \"Etsy\", \"percent\": 10.5, \"fixed\": 0.36}, ...] with names \"Etsy\", \"eBay (business)\", \"Shopify\", \"In person (card)\"."
+	var txt: String = await ai.quick_call(prompt, true, 700)
+	var a := txt.find("[")
+	var b := txt.rfind("]")
+	var arr = JSON.parse_string(txt.substr(a, b - a + 1)) if a >= 0 and b > a else null
+	if not (arr is Array):
+		_say("Couldn't get clean numbers back. The table's unchanged.", 6)
+		return
+	var key := "shipping" if kind == "shipping" else "platforms"
+	var n := 0
+	for item in arr:
+		for row in shop.data[key]:
+			if String(row.name) == String(item.get("name", "")):
+				for k in ["price", "percent", "fixed"]:
+					if item.has(k):
+						row[k] = float(item[k])
+				n += 1
+	if kind == "shipping":
+		shop.data.shipping_checked = "checked by Rico on " + Time.get_date_string_from_system()
+	shop.save()
+	_say("Updated %d %s. Reopen the Print Shop to see them." % [n, "prices" if kind == "shipping" else "fee rates"], 6)
+
+
+func _on_print_event(kind: String, info: Dictionary) -> void:
+	match kind:
+		"connected":
+			if String(info.get("state", "")) == "":
+				pass
+		"done":
+			var mins := (Time.get_unix_time_from_system() - _print_started) / 60.0 if _print_started > 0 else 0.0
+			if mins > 0:
+				Cfg.data.last_print_minutes = mins
+			Cfg.data.last_print_name = String(info.get("job", ""))
+			Cfg.save()
+			_print_started = 0.0
+			_big_moment(Lines.pick(["Print's done! %s came out of the oven. Go and admire it.", "Ding! %s is finished. Careful, the plate's still warm.", "%s: complete. Another flawless victory for the machines."]) % (String(info.get("job", "Your print")) if String(info.get("job", "")) != "" else "Your print"), "happy")
+		"failed":
+			_print_started = 0.0
+			_big_moment(Lines.pick(["Bad news: %s failed. Tell me what it looks like and I'll work out why.", "Uh oh. %s didn't make it. Describe the carnage and I'll diagnose it."]) % (String(info.get("job", "The print")) if String(info.get("job", "")) != "" else "The print"), "shock")
+		"attention":
+			_big_moment("Your printer needs you: it's %s%s. Probably filament, or it just misses you." % ["paused" if String(info.get("state", "")) == "PAUSE" else "flagging a problem", (" (error %d)" % int(info.error)) if int(info.get("error", 0)) != 0 else ""], "worried")
+
+
+func _big_moment(text: String, mood: String) -> void:
+	if _fs_hidden:
+		voice.speak(text)
+		_fs_queue.append(text)
+		return
+	_show()
+	_wake_up()
+	rico.set_mood(mood, 3.0)
+	rico.jump_for_joy()
+	sfx.play("alert")
+	_say(text, 15)
+	if int(Cfg.g("speak_replies", 1)) == 2:
+		voice.speak(text)
+
+
+func _minute_checks() -> void:
+	# bills due tomorrow
+	var notified: Dictionary = Cfg.g("bills_notified", {})
+	for b in money.data.bills:
+		var due: String = money.next_due(b)
+		var unix := Time.get_unix_time_from_datetime_string(due + "T09:00:00")
+		var key := "%s|%s" % [b.name, due]
+		if unix - Time.get_unix_time_from_system() < 36 * 3600 and not notified.has(key):
+			notified[key] = true
+			Cfg.s("bills_notified", notified)
+			_big_moment("Heads up: %s takes £%.2f on %s. Make sure there's money in the pot." % [b.name, float(b.amount), due], "think")
+			return
+	# printer maintenance, at most once a day
+	if bambu.configured() and Time.get_unix_time_from_system() - float(Cfg.g("maint_nagged", 0)) > 86400 and bambu.progress() < 0:
+		var hours := float(Cfg.g("print_hours", 0.0))
+		var done: Dictionary = Cfg.g("maint_done", {})
+		for m in ShopWindowScript.MAINTENANCE:
+			if hours - float(done.get(m.id, 0.0)) >= float(m.every):
+				Cfg.s("maint_nagged", Time.get_unix_time_from_system())
+				if not bubble.is_busy_with_user():
+					_say("Printer TLC time: %s. Tick it off in Print Shop > Printer when done." % String(m.name).to_lower(), 12)
+				return
+
+
+# ------------------------------------------------------------------ games
+
+func _on_game_started(g: String) -> void:
+	var e: Dictionary = games.entry(g)
+	var first := int(e.get("played_min", 0)) == 0
+	if Cfg.g("game_help", true) and not bubble.is_busy_with_user():
+		var line := (Lines.pick(Lines.GAME_FIRST) if first else Lines.pick(Lines.GAME_BACK)) % g
+		_say(line, 6)
+
+
+func _game_tick(delta: float) -> void:
+	var g: String = games.current()
+	if g == "":
+		return
+	_game_time += delta
+	if int(_game_time) % 60 == 0 and int(_game_time) > 0 and int(_game_time - delta) % 60 != 0:
+		var e: Dictionary = games.entry(g)
+		e.played_min = int(e.get("played_min", 0)) + 1
+		games.save()
+	if not Cfg.g("game_tips", true) or not Cfg.g("game_help", true):
+		return
+	_game_tip_timer -= delta
+	if _game_tip_timer > 0:
+		return
+	_game_tip_timer = 900.0
+	var tip: String = games.next_tip(g)
+	if tip == "":
+		_fetch_tips(g)
+		_game_tip_timer = 60.0
+		return
+	if not bubble.is_busy_with_user():
+		_say(tip, 10)
+		voice.speak(tip)
+
+
+func _fetch_tips(g: String) -> void:
+	if _fetching_tips or not ai.has_key():
+		return
+	var cap: float = float(Cfg.g("daily_cap_gbp", 0.0))
+	if cap > 0 and mem.today_gbp() >= cap:
+		return
+	_fetching_tips = true
+	var prompt := "Pierre is playing %s right now. Give 8 short, genuinely useful gameplay tips for it, in your voice: each one sentence, a little cheeky, no story spoilers, a mix of beginner and clever tricks, and correct for the current version (use web_search once if you're not sure). Reply with ONLY a JSON array of 8 strings." % g
+	var txt: String = await ai.quick_call(prompt, true, 900)
+	_fetching_tips = false
+	var start := txt.find("[")
+	var end := txt.rfind("]")
+	if start >= 0 and end > start:
+		var arr = JSON.parse_string(txt.substr(start, end - start + 1))
+		if arr is Array:
+			games.add_tips(g, arr)
+
+
 func _app_label(exe: String) -> String:
 	return exe.get_basename().capitalize() if exe != "" else "this app"
 
 
-func _on_focus_rect(r: Rect2i, exe: String) -> void:
+func _on_focus_rect(r: Rect2i, exe_path: String) -> void:
+	var exe := exe_path.get_file().to_lower() if exe_path != "" else ""
+	var g: String = GamesScript.detect(exe_path, _fg_title) if exe_path != "" else ""
+	if exe_path != "" and g != games.detected:
+		games.detected = g
+		ai.game = games.current()
+		if g != "":
+			_game_time = 0.0
+			_game_tip_timer = 600.0
+			_on_game_started(g)
+	_check_fullscreen(r)
 	if r.size.x <= 0:
 		_fg_rect = Rect2()
 		exe = "desktop"
@@ -1468,6 +2023,11 @@ func _apply_placement() -> void:
 	if rico.home_x >= 0:
 		if absf(rico.position.x - rico.home_x) > 14:
 			rico.hop_to(rico.home_x, true)
+		return
+	if rico.docked:
+		return
+	if _no_space():
+		_dock()
 		return
 	if _covered(rico.position.x):
 		var target := _free_x()
@@ -1594,6 +2154,15 @@ func _process(delta: float) -> void:
 		_say(_next_tip(_fg_kind), 9)
 
 	_poll_controller()
+	_game_tick(delta)
+	_update_presence(delta, mouse)
+	rico.print_progress = bambu.progress()
+	if bambu.progress() >= 0 and _print_started <= 0:
+		_print_started = Time.get_unix_time_from_system() - float(bambu.state.get("mc_percent", 0)) / 100.0 * 0.0
+	_minute_timer -= delta
+	if _minute_timer <= 0:
+		_minute_timer = 60.0
+		_minute_checks()
 	if _update_waiting and _mouse_still > 900.0 and not bubble.is_open() and not search.is_open() and not ai.busy and not _approval_pending:
 		_update_waiting = false
 		updater.install_pending()
@@ -1649,12 +2218,14 @@ func _next_tip(kind: String) -> String:
 
 func _update_region(force := false) -> void:
 	var r: Rect2 = rico.visual_rect(70.0)
+	if _ghost > 0.97 and not bubble.visible and not search.visible:
+		r = Rect2(0, 0, 1, 1)   # faded out: let every click through
 	if bubble.visible:
 		r = r.merge(bubble.rect_with_tail())
 	if search.visible:
 		r = r.merge(Rect2(search.position - Vector2(16, 16), search.size + Vector2(32, 40)))
 	r = r.intersection(area.grow(-0.0))
-	if r.size.x < 4 or r.size.y < 4:
+	if (r.size.x < 4 or r.size.y < 4) and _ghost <= 0.97:
 		r = Rect2(rico.position - Vector2(40, 40), Vector2(80, 80))
 	r = Rect2(r.position.floor(), r.size.ceil())
 	if not force and absf(r.position.x - _last_region.position.x) < 2 and absf(r.position.y - _last_region.position.y) < 2 \
@@ -1683,7 +2254,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed and rico.hit_test(event.position):
+	if event is InputEventMouseButton and event.pressed and rico.hit_test(event.position) and _ghost < 0.5:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			_pressing = true
 			_press_button = MOUSE_BUTTON_LEFT
@@ -1698,6 +2269,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_rico_clicked() -> void:
 	_mouse_still = 0.0
+	if rico.docked:
+		_wake_up()
+		_say(Lines.pick(["You rang?", "Back from my little corner. What's up?", "Ta-da. Hologram deployed."]), 4)
+		return
 	if rico.state == RicoScript.State.SLEEP:
 		rico.wake()
 		_say(Lines.pick(Lines.WAKE), 4)

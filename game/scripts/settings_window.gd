@@ -9,7 +9,7 @@ const BG := Color(0.085, 0.08, 0.095)
 const CARD := Color(1, 1, 1, 0.035)
 const INK := UI.TEXT
 const ACCENT := UI.COPPER_HI
-const TAB_ICONS := {"Chat": "chat", "Voice": "mic", "Reminders": "bell", "Projects": "rocket", "Rico": "sparkles", "PC": "cpu", "Activity": "activity", "Usage": "coin", "Help": "info"}
+const TAB_ICONS := {"Games": "gamepad", "Chat": "chat", "Voice": "mic", "Reminders": "bell", "Projects": "rocket", "Rico": "sparkles", "PC": "cpu", "Activity": "activity", "Usage": "coin", "Help": "info"}
 
 var _nav: VBoxContainer
 var _nav_buttons: Array = []
@@ -18,6 +18,10 @@ var reminders: Node
 var voice: Node
 var pc: Node
 var updater: Node
+var games: Node
+var _game_label: Label
+var _game_lists: ItemList
+var _game_items: Array = []
 var _update_label: Label
 var mem: Node
 var brain: Node
@@ -100,6 +104,7 @@ func build() -> void:
 	_build_reminders()
 	_build_projects()
 	_build_rico()
+	_build_games()
 	_build_pc()
 	_build_activity()
 	_build_usage()
@@ -260,6 +265,10 @@ func _option(parent: Node, text: String, key: String, items: Array) -> OptionBut
 
 func _build_chat() -> void:
 	var v := _page("Chat")
+	_heading(v, "Privacy")
+	_check(v, "Local-only mode: nothing about you leaves this PC", "local_only")
+	_label(v, "On: Rico chats with his offline brain (Settings > Usage to download it), and Claude and web lookups are never used. Your money, prints, memory and chats all stay here. Rico still checks GitHub for app updates and fetches exchange rates; neither sends anything about you, and both can be switched off below.\nOff: harder questions, game help, model searches and PC jobs can use Claude with your API key.", true)
+	_check(v, "Fetch daily exchange rates (for currency conversions)", "fetch_rates")
 	_heading(v, "Claude API key")
 	_label(v, "Rico's brain runs on Claude. Paste an API key from console.anthropic.com. It's stored only on this PC, in Rico's settings file.", true)
 	var key := LineEdit.new()
@@ -524,6 +533,47 @@ func _set_autostart(on: bool) -> void:
 		OS.execute("reg", ["add", key, "/v", "Rico", "/t", "REG_SZ", "/d", "\"%s\"" % OS.get_executable_path().replace("/", "\\"), "/f"])
 	else:
 		OS.execute("reg", ["delete", key, "/v", "Rico", "/f"])
+
+
+func _build_games() -> void:
+	var v := _page("Games")
+	_heading(v, "Game help")
+	_label(v, "Rico spots the game you're playing (Steam, Epic, GOG, Xbox and more) and helps with bosses, builds, quests and collectibles. He gives hints first and full answers when you say \"just tell me\". Ask him in chat or by voice: hold View and press X on your controller.", true)
+	_check(v, "Game help", "game_help")
+	_check(v, "Occasional tips while I play (spoken aloud, about every 15 minutes)", "game_tips")
+	_game_label = _label(v, "")
+	_heading(v, "Checklists")
+	_label(v, "Ask Rico to make one (\"make me a checklist of the collectibles\") and tick things off by saying \"got the X\". Double-click an item to toggle it here.", true)
+	_game_lists = ItemList.new()
+	_game_lists.custom_minimum_size = Vector2(0, 260)
+	_game_lists.item_activated.connect(func(i):
+		if i < _game_items.size() and games:
+			var it: Dictionary = _game_items[i]
+			if it.has("ref"):
+				it.ref.done = not it.ref.done
+				games.save()
+				refresh_games())
+	v.add_child(_game_lists)
+	tabs.tab_changed.connect(func(_t): refresh_games())
+
+
+func refresh_games() -> void:
+	if _game_lists == null or games == null:
+		return
+	var cur: String = games.current()
+	_game_label.text = ("Playing now: " + cur) if cur != "" else "No game detected right now."
+	_game_lists.clear()
+	_game_items = []
+	for g in games.data.keys():
+		var lists: Dictionary = games.data[g].get("lists", {})
+		for title in lists.keys():
+			var lst: Array = lists[title]
+			var done := lst.filter(func(x): return x.done).size()
+			_game_lists.add_item("%s: %s (%d/%d)" % [g, title, done, lst.size()])
+			_game_items.append({})
+			for it in lst:
+				_game_lists.add_item(("     " + UI.icon("check") + "  " if it.done else "     ○  ") + String(it.t))
+				_game_items.append({"ref": it})
 
 
 func _build_pc() -> void:

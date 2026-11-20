@@ -29,8 +29,18 @@ var _max_tokens := 350
 var _cost := 0.0
 var _used_tools := false
 var _question := ""
+var game := ""                  # game being played right now (from main)
+var _web := false
+
+const WEB_SEARCH := {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
 
 const TOOLS := [
+	{"name": "game_checklist_set", "description": "Create or replace a checklist for a game (collectibles, achievements, side quests). Look the real list up with web_search first. Keep item names short.",
+		"input_schema": {"type": "object", "properties": {"game": {"type": "string"}, "title": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}}}, "required": ["game", "title", "items"]}},
+	{"name": "game_checklist_tick", "description": "Mark a checklist item as done (or not done) for a game.",
+		"input_schema": {"type": "object", "properties": {"game": {"type": "string"}, "item": {"type": "string"}, "done": {"type": "boolean"}}, "required": ["game", "item"]}},
+	{"name": "game_checklist_show", "description": "Show a game's checklists and what's left.",
+		"input_schema": {"type": "object", "properties": {"game": {"type": "string"}}, "required": ["game"]}},
 	{"name": "remember_fact", "description": "Save a lasting fact about the user, their PC or preferences to Rico's local memory (e.g. 'uses Blender 4.2', 'prefers dark UI'). Use when the user tells you something worth knowing next time.",
 		"input_schema": {"type": "object", "properties": {"fact": {"type": "string"}}, "required": ["fact"]}},
 	{"name": "forget_fact", "description": "Remove facts from Rico's local memory that match the given words.",
@@ -113,24 +123,35 @@ const GROUPS := {
 	"perf": ["get_top_processes", "close_apps", "scan_junk", "clean_junk", "list_startup_apps", "set_startup_app", "list_power_plans", "set_power_plan", "performance_mode", "system_health"],
 	"files": ["find_files", "tidy_folder", "rename_files", "undo_last_file_change", "recycle_files"],
 	"power": ["run_powershell", "save_routine", "run_routine", "get_activity_log"],
+	"games": ["game_checklist_set", "game_checklist_tick", "game_checklist_show"],
+	"web": [],
 }
 const TRIGGERS := {
 	"perf": ["slow", "lag", "cpu", "ram", "memory", "gpu", "hog", "close", "kill", "quit", "junk", "clean", "space", "disk", "storage", "startup", "boot", "power", "battery", "perf", "game mode", "render mode", "fps", "temp", "hot", "heat", "health", "update", "driver", "fan", "speed up", "optimi", "process", "running"],
 	"files": ["file", "folder", "download", "desktop", "document", "picture", "photo", "image", "tidy", "organi", "rename", "duplicate", "biggest", "large", "delete", "recycle", "undo", "move", "sort"],
 	"power": ["command", "powershell", "script", "install", "uninstall", "setting", "routine", "registry", "network", "wifi", "bluetooth", "printer", "volume", "display", "monitor", "resolution", "activity", "log", "what did you do", "windows", "service", "schedule"],
 	"_pc": ["pc", "computer", "laptop", "machine", "system"],
+	"games": ["game", "boss", "quest", "mission", "level", "build", "loadout", "weapon", "armour", "armor", "skill tree", "talent", "perk", "achievement", "trophy", "collectible", "secret", "walkthrough", "puzzle", "beat ", "defeat", "where is", "where do i", "how do i get", "unlock", "farm", "xp", "dps", "stuck"],
+	"web": ["latest", "current", "news", "release date", "patch", "update", "price", "review", "version", "tutorial", "reference", "inspiration", "trend"],
 }
 const HARD := ["think hard", "think carefully", "in depth", "step by step", "detailed", "debug", "refactor", "algorithm", "architecture", "gdscript", "shader", "write a script", "write code", "code review", "traceback", "error:", "exception", "stack trace", "```", "compare", "pros and cons", "plan out", "design a"]
 
-const STATIC_PROMPT := """You are Rico (short for Ricochet), a small cartoon living bullet who lives on the user's Windows desktop as a desktop assistant. The user is Pierre, an indie game developer and artist (Godot, Blender) who also does product/UX design.
+const STATIC_PROMPT := """You are Rico (short for Ricochet), a small cartoon living brass bullet who lives on Pierre's Windows desktop. Pierre games a lot, illustrates, designs games (Godot, Blender) and does UX/UI design (Figma). You're his funny sidekick for the daily stuff on his machine.
 
-Personality: cheeky, sarcastic, dry-witted, a bit smug, but genuinely helpful and never mean. Tease, then help properly. British-friendly humour. Occasional bullet puns, not every line.
+Personality comes first, but you're genuinely, properly useful. You're cheeky, sarcastic, quick and a bit smug, with British humour. You roast gently and never cruelly, and you're loyal underneath. Open with a quip or a reaction, then deliver real help: specific steps, names, numbers and shortcuts. Never pad. If something is clever, say so. If Pierre's about to do something daft, tease him and suggest the better way. Bullet puns are allowed sometimes, but don't overdo them. Never sound like a corporate assistant or say "As an AI".
 
-Replies appear in a small speech bubble and every token costs money: be brief. 1-2 sentences by default; only go longer if asked for detail or steps (then number short steps on separate lines). Plain text only: no markdown, no bullet symbols, no emoji.
+Replies appear in a small speech bubble and every token costs money, so keep them tight: 1-3 sentences by default. Go longer only when asked for detail or steps, and then number short steps on separate lines. Plain text only: no markdown, no bullet symbols, no emoji.
 
-Use tools instead of promising: reminders/timers, opening projects/apps, remembering facts the user tells you (remember_fact). PC tools (when provided) can check what's hogging the PC, clean junk, manage startup apps and power plans, toggle Game/Render mode, tidy/rename/find files, run health checks and run PowerShell. Read-only tools run instantly; tools that change things show the user an Allow/Deny card, so call them directly instead of asking first. Investigate before acting, never close system processes or the app the user is working in unless asked, accept a denial gracefully, and report results briefly with numbers and names.
+What you're good at:
+- Games: boss strategies, builds and loadouts, quests, puzzles, collectibles and achievements. Use web_search for anything game-specific so the info is current and correct, and mention the patch if it matters. Spoilers: give a hint first, and the full answer only if he asks ("just tell me"). Never reveal story spoilers he didn't ask for. You can keep per-game checklists with the checklist tools.
+- Illustration (Clip Studio, Krita, Photoshop, Procreate): practical art advice on anatomy, values, colour, composition, brushes and workflow shortcuts.
+- Game design and Godot/Blender: mechanics, level design, game feel, GDScript patterns, Blender modelling and export to Godot.
+- UX/UI (Figma): layout, hierarchy, accessibility, components, auto layout and critique with concrete fixes.
+- His PC: when the PC tools are provided, use them.
 
-Each user message starts with a [context] line (time, app in front, relevant memory, earlier chat). Use it silently; don't repeat it back."""
+Use tools instead of promising: reminders and timers, opening projects and apps, and remembering facts he tells you (remember_fact). Tools that change things show him an Allow/Deny card, so call them directly instead of asking first. Accept a denial gracefully, with a quip.
+
+Each message starts with a [context] line (time, app in front, game being played, relevant memory, earlier chat). Use it silently and never read it back."""
 
 
 func _ready() -> void:
@@ -140,7 +161,10 @@ func _ready() -> void:
 	_http.request_completed.connect(_on_done)
 
 
+## False in Local-only mode: then nothing is ever sent to Claude.
 func has_key() -> bool:
+	if bool(Cfg.g("local_only", true)):
+		return false
 	return String(Cfg.g("api_key", "")).strip_edges().length() > 10
 
 
@@ -160,7 +184,7 @@ static func _has_any(t: String, list: Array) -> bool:
 static func groups_for(text: String) -> Array:
 	var t := " " + text.to_lower() + " "
 	var g := ["core"]
-	for k in ["perf", "files", "power"]:
+	for k in ["perf", "files", "power", "games", "web"]:
 		if _has_any(t, TRIGGERS[k]):
 			g.append(k)
 	if _has_any(t, TRIGGERS["_pc"]):
@@ -182,6 +206,8 @@ func _tool_defs(groups: Array) -> Array:
 	for g in groups:
 		names.append_array(GROUPS[g])
 	var out := []
+	if "games" in groups or "web" in groups:
+		out.append(WEB_SEARCH.duplicate(true))
 	for t in TOOLS:
 		if t.name in names:
 			out.append(t.duplicate(true))
@@ -191,6 +217,8 @@ func _tool_defs(groups: Array) -> Array:
 func _context(text: String, groups: Array) -> String:
 	var now := Time.get_datetime_dict_from_system()
 	var parts := ["time %02d:%02d %04d-%02d-%02d" % [now.hour, now.minute, now.year, now.month, now.day]]
+	if game != "":
+		parts.append("currently playing: " + game)
 	if foreground_app != "":
 		parts.append("app in front: " + foreground_app.left(80))
 	var projects := []
@@ -218,6 +246,8 @@ func ask(text: String) -> void:
 		return
 	_question = text
 	var groups := groups_for(text)
+	if game != "" and not "games" in groups and not needs_tools(text):
+		groups.append("games")   # playing something: game help is the likely ask
 	_tools = _tool_defs(groups)
 	if not _tools.is_empty():
 		_tools[-1]["cache_control"] = {"type": "ephemeral"}
@@ -302,6 +332,10 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 		_cost += mem.add_usage(_model, data.usage)
 	var content: Array = data.get("content", [])
 	_turn.append({"role": "assistant", "content": content})
+	if data.get("stop_reason", "") == "pause_turn" and _loops < 10:
+		_loops += 1
+		_send()   # long web search: let Claude carry on
+		return
 	if data.get("stop_reason", "") == "tool_use" and _loops < 10:
 		_loops += 1
 		_used_tools = true
@@ -329,6 +363,38 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 
 
 ## Keep history short and text-only; squash older turns into tiny notes.
+## One-off request outside the chat (e.g. a batch of game tips). Returns the text, or "".
+func quick_call(prompt: String, use_web := false, max_tokens := 700) -> String:
+	if not has_key():
+		return ""
+	var http := HTTPRequest.new()
+	http.timeout = 90
+	add_child(http)
+	var body := {"model": HAIKU, "max_tokens": max_tokens,
+		"system": [{"type": "text", "text": STATIC_PROMPT, "cache_control": {"type": "ephemeral"}}],
+		"messages": [{"role": "user", "content": prompt}]}
+	if use_web:
+		body["tools"] = [WEB_SEARCH]
+	var headers := ["content-type: application/json", "x-api-key: " + String(Cfg.g("api_key", "")).strip_edges(), "anthropic-version: 2023-06-01"]
+	if http.request(URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body)) != OK:
+		http.queue_free()
+		return ""
+	var r: Array = await http.request_completed
+	http.queue_free()
+	if r[0] != HTTPRequest.RESULT_SUCCESS or r[1] != 200:
+		return ""
+	var d = JSON.parse_string((r[3] as PackedByteArray).get_string_from_utf8())
+	if not (d is Dictionary):
+		return ""
+	if mem and d.has("usage"):
+		mem.add_usage(HAIKU, d.usage)
+	var parts := []
+	for blk in d.get("content", []):
+		if blk.get("type") == "text":
+			parts.append(blk.text)
+	return "\n".join(parts).strip_edges()
+
+
 func _commit(answer: String) -> void:
 	history.append({"role": "user", "content": _question})
 	history.append({"role": "assistant", "content": answer.left(600)})

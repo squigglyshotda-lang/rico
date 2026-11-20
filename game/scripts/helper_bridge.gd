@@ -54,7 +54,7 @@ func _handle(line: String) -> void:
 			focus_rect.emit(Rect2i(), "")
 		else:
 			var l := int(parts[0]); var t := int(parts[1])
-			focus_rect.emit(Rect2i(l, t, int(parts[2]) - l, int(parts[3]) - t), parts[4].to_lower())
+			focus_rect.emit(Rect2i(l, t, int(parts[2]) - l, int(parts[3]) - t), parts[4])
 	elif line.begins_with("FG "):
 		foreground_changed.emit(line.substr(3))
 

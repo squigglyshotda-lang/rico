@@ -73,6 +73,8 @@ func _ready() -> void:
 
 ## Refresh currency rates at most once a day.
 func refresh_rates() -> void:
+	if not bool(Cfg.g("fetch_rates", true)):
+		return
 	var today := Time.get_date_string_from_system()
 	if rates_date == today or _http.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
 		return

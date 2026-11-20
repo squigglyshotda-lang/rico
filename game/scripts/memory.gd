@@ -171,7 +171,8 @@ func add_usage(model: String, u: Dictionary) -> float:
 	var o := int(u.get("output_tokens", 0))
 	var cw := int(u.get("cache_creation_input_tokens", 0))
 	var cr := int(u.get("cache_read_input_tokens", 0))
-	var usd: float = (i * p[0] + o * p[1] + cw * p[2] + cr * p[3]) / 1e6
+	var searches := int(u.get("server_tool_use", {}).get("web_search_requests", 0)) if u.get("server_tool_use") is Dictionary else 0
+	var usd: float = (i * p[0] + o * p[1] + cw * p[2] + cr * p[3]) / 1e6 + searches * 0.01
 	var t := _today()
 	t["in"] += i; t["out"] += o; t["cw"] += cw; t["cr"] += cr
 	t["usd"] = float(t["usd"]) + usd

@@ -66,10 +66,7 @@ static void report_rect(HWND fg, DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (h) {
         DWORD n = MAX_PATH;
-        if (QueryFullProcessImageNameW(h, 0, exe, &n)) {
-            wchar_t *slash = wcsrchr(exe, L'\\');
-            if (slash) memmove(exe, slash + 1, (wcslen(slash + 1) + 1) * sizeof(wchar_t));
-        }
+        QueryFullProcessImageNameW(h, 0, exe, &n);   /* full path: Rico uses it to spot games */
         CloseHandle(h);
     }
     snprintf(line, sizeof(line), "FGRECT %ld %ld %ld %ld ", r.left, r.top, r.right, r.bottom);
