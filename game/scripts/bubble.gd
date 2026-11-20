@@ -15,6 +15,9 @@ var title_label: Label
 var text_label: RichTextLabel
 var scroll: ScrollContainer
 var actions_box: HBoxContainer
+var checks_box: VBoxContainer
+var details_label: RichTextLabel
+var details_scroll: ScrollContainer
 var input_row: HBoxContainer
 var input: LineEdit
 var mic_btn: Button
@@ -86,6 +89,33 @@ func _ready() -> void:
 	text_label.add_theme_color_override("default_color", INK)
 	text_label.add_theme_font_size_override("normal_font_size", 17)
 	scroll.add_child(text_label)
+
+	checks_box = VBoxContainer.new()
+	checks_box.add_theme_constant_override("separation", 2)
+	checks_box.visible = false
+	v.add_child(checks_box)
+
+	details_scroll = ScrollContainer.new()
+	details_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	details_scroll.visible = false
+	var dbg := StyleBoxFlat.new()
+	dbg.bg_color = Color("2a1a10")
+	dbg.set_corner_radius_all(8)
+	dbg.set_content_margin_all(8)
+	details_scroll.add_theme_stylebox_override("panel", dbg)
+	v.add_child(details_scroll)
+	details_label = RichTextLabel.new()
+	details_label.fit_content = true
+	details_label.scroll_active = false
+	details_label.selection_enabled = true
+	details_label.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	details_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	details_label.add_theme_color_override("default_color", Color("ffe9c7"))
+	details_label.add_theme_font_size_override("normal_font_size", 13)
+	var mono := SystemFont.new()
+	mono.font_names = PackedStringArray(["Cascadia Mono", "Consolas", "monospace"])
+	details_label.add_theme_font_override("normal_font", mono)
+	details_scroll.add_child(details_label)
 
 	actions_box = HBoxContainer.new()
 	actions_box.add_theme_constant_override("separation", 8)
@@ -165,7 +195,22 @@ func _draw_tail() -> void:
 
 
 ## Show a line. timeout <= 0 keeps it up until closed.
-func say(text: String, timeout := 6.0, buttons: Array = []) -> void:
+func say(text: String, timeout := 6.0, buttons: Array = [], details := "", checklist: Array = []) -> void:
+	details_label.text = details
+	details_scroll.visible = false
+	for c in checks_box.get_children():
+		c.queue_free()
+	checks_box.visible = not checklist.is_empty()
+	for item in checklist:
+		var cb := CheckBox.new()
+		cb.text = item[1]
+		cb.button_pressed = item[2]
+		cb.add_theme_color_override("font_color", INK)
+		cb.add_theme_color_override("font_hover_color", ACCENT)
+		cb.add_theme_color_override("font_pressed_color", INK)
+		cb.add_theme_color_override("font_focus_color", INK)
+		cb.add_theme_font_size_override("font_size", 15)
+		checks_box.add_child(cb)
 	_full_text = text
 	_shown = 0.0
 	text_label.text = text
@@ -204,6 +249,22 @@ func hide_bubble() -> void:
 	input.release_focus()
 
 
+func get_checks() -> Array:
+	var out := []
+	for c in checks_box.get_children():
+		if not c.is_queued_for_deletion():
+			out.append(c.button_pressed)
+	return out
+
+
+func toggle_details() -> void:
+	details_scroll.visible = not details_scroll.visible
+	for b in actions_box.get_children():
+		if b is Button and b.get_meta("id", "") == "details":
+			b.text = "Hide details" if details_scroll.visible else "Show details"
+	_relayout()
+
+
 func is_busy_with_user() -> bool:
 	return visible and (chat_mode or not actions_box.get_children().is_empty())
 
@@ -216,6 +277,7 @@ func _set_buttons(buttons: Array) -> void:
 	for b in buttons:
 		var btn := _button(b[1], "")
 		var id: String = b[0]
+		btn.set_meta("id", id)
 		btn.pressed.connect(func(): action.emit(id))
 		actions_box.add_child(btn)
 		if first == null:
@@ -254,6 +316,8 @@ func _process(delta: float) -> void:
 func _relayout() -> void:
 	var content_h := text_label.get_content_height()
 	scroll.custom_minimum_size = Vector2(300, minf(content_h, 280.0))
+	if details_scroll.visible:
+		details_scroll.custom_minimum_size = Vector2(300, minf(details_label.get_content_height() + 16, 220.0))
 	panel.reset_size()
 	size = panel.size
 

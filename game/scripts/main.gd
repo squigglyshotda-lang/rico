@@ -10,6 +10,9 @@ const AiScript := preload("res://scripts/ai.gd")
 const VoiceScript := preload("res://scripts/voice.gd")
 const RemindersScript := preload("res://scripts/reminders.gd")
 const SettingsScript := preload("res://scripts/settings_window.gd")
+const PcScript := preload("res://scripts/pc.gd")
+
+signal _approval_answered(result: Dictionary)
 
 var rico
 var bubble
@@ -19,6 +22,10 @@ var ai
 var voice
 var reminders
 var settings
+var pc
+var pc_menu: PopupMenu
+var _approval_pending := false
+var _report_timer := 30.0
 var menu: PopupMenu
 var timer_menu: PopupMenu
 var projects_menu: PopupMenu
@@ -67,6 +74,8 @@ func _ready() -> void:
 	ai = AiScript.new(); add_child(ai)
 	voice = VoiceScript.new(); add_child(voice)
 	reminders = RemindersScript.new(); add_child(reminders)
+	pc = PcScript.new(); add_child(pc)
+	pc.approve = _request_approval
 
 	rico.scale = Vector2.ONE * Cfg.size_scale()
 	rico.bounds = area
@@ -79,7 +88,7 @@ func _ready() -> void:
 	bubble.submitted.connect(_on_submitted)
 	bubble.mic_pressed.connect(_toggle_voice)
 	bubble.action.connect(_on_bubble_action)
-	bubble.closed.connect(func(): voice.stop_speaking())
+	bubble.closed.connect(_on_bubble_closed)
 
 	helper.hotkey.connect(_on_hotkey)
 	helper.foreground_changed.connect(_on_foreground)
@@ -99,6 +108,7 @@ func _ready() -> void:
 	settings = SettingsScript.new()
 	settings.reminders = reminders
 	settings.voice = voice
+	settings.pc = pc
 	add_child(settings)
 	settings.build()
 	settings.test_requested.connect(_test_api)
@@ -158,6 +168,9 @@ func _run_shot_test() -> void:
 	Cfg.data.volume = 0.0
 	var tree := get_tree()
 	var shots := [
+		["approve", func(): rico.position.x = 900; _request_approval("Clean up junk? Up to 2340 MB can be freed. Untick anything you want to keep.", "Temp files used in the last 24 hours are skipped.", [["a", "Your temp files: 1210 MB", true], ["b", "Browser caches (Chrome, Edge, Firefox): 860 MB", true], ["c", "Recycle Bin: 270 MB", false]])],
+		["command", func(): _answer_approval(false); _request_approval("Check how much space each folder in Downloads takes.", "Get-ChildItem \"$env:USERPROFILE\\Downloads\" -Directory | ForEach-Object { [pscustomobject]@{ Name = $_.Name; MB = [math]::Round((Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum / 1MB) } } | Sort-Object MB -Descending", [], false); await get_tree().create_timer(0.3).timeout; bubble.toggle_details()],
+		["slow", func(): _answer_approval(false); _say("CPU 64%, RAM 88% of 32 GB used.\nblender: 41% CPU, 9120 MB\nchrome (x23): 12% CPU, 5400 MB\nDiscord: 3% CPU, 910 MB\nRAM's nearly full, that's your slowdown.", -1, false, [["close:chrome", "Close chrome"], ["close:Discord", "Close Discord"], ["dismiss", "Thanks"]])],
 		["idle", func(): rico.position.x = 900; rico.set_mood("smug", 99)],
 		["happy", func(): rico.set_mood("happy", 99)],
 		["talk", func(): rico.set_mood("smug", 99); _say("Rico, reporting for duty. Try not to make it boring.", 99)],
@@ -176,6 +189,9 @@ func _run_shot_test() -> void:
 			rico.state = RicoScript.State.DRAG
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(out.path_join(s[0] + ".png"))
+		if s[0] == "slow" and OS.has_environment("RICO_SHOT_PC"):
+			get_tree().quit()
+			return
 	# icon render
 	bubble.hide_bubble()
 	sparks.clear()
@@ -223,6 +239,9 @@ func _build_menu() -> void:
 	menu.add_separator()
 	menu.add_submenu_node_item("Quick timer", timer_menu)
 	menu.add_submenu_node_item("Open project", projects_menu)
+	pc_menu = PopupMenu.new()
+	pc_menu.id_pressed.connect(_on_pc_menu)
+	menu.add_submenu_node_item("PC", pc_menu)
 	menu.add_item("Reminders...", 2)
 	menu.add_separator()
 	menu.add_item("Settings...", 3)
@@ -234,6 +253,28 @@ func _build_menu() -> void:
 	menu.add_item("Quit Rico", 9)
 	menu.id_pressed.connect(_on_menu)
 	menu.about_to_popup.connect(_refresh_projects_menu)
+	menu.about_to_popup.connect(_refresh_pc_menu)
+
+
+func _refresh_pc_menu() -> void:
+	pc_menu.clear()
+	pc_menu.add_item("What's slowing me down?", 0)
+	pc_menu.add_item("Clean up junk...", 1)
+	var perf_on: bool = Cfg.g("perf_state", {}).get("on", false)
+	pc_menu.add_item("Game/Render mode: turn OFF" if perf_on else "Game/Render mode: turn ON", 2)
+	pc_menu.add_item("Health check", 3)
+	pc_menu.add_item("Startup apps...", 4)
+	if not Cfg.g("last_undo", {}).is_empty():
+		pc_menu.add_item("Undo last %s" % Cfg.g("last_undo").label, 5)
+	pc_menu.add_item("Activity log...", 6)
+	var routines: Array = Cfg.g("routines", [])
+	if not routines.is_empty():
+		pc_menu.add_separator("Routines")
+		for i in routines.size():
+			pc_menu.add_item("Run: " + String(routines[i].name), 100 + i)
+	if not pc.enabled():
+		for i in pc_menu.item_count:
+			pc_menu.set_item_disabled(i, true)
 
 
 func _refresh_projects_menu() -> void:
@@ -248,6 +289,7 @@ func _refresh_projects_menu() -> void:
 
 func _popup_menu(screen_pos: Vector2i) -> void:
 	_refresh_projects_menu()
+	_refresh_pc_menu()
 	menu.reset_size()
 	menu.position = screen_pos
 	menu.popup()
@@ -289,6 +331,10 @@ func _build_tray() -> void:
 
 func _open_settings(tab := 0) -> void:
 	settings.tabs.current_tab = tab
+	settings.refresh_pc()
+	settings.refresh_log()
+	if tab == 5:
+		settings.refresh_startup()
 	settings.refresh_reminders()
 	settings.refresh_projects()
 	settings.popup_centered()
@@ -396,7 +442,16 @@ func _test_api() -> void:
 	_handle_request("Say a one-line hello to prove you're connected.")
 
 
+const PC_TOOLS := ["get_top_processes", "scan_junk", "list_startup_apps", "list_power_plans", "system_health", "find_files",
+	"get_activity_log", "close_apps", "clean_junk", "set_startup_app", "set_power_plan", "performance_mode", "tidy_folder",
+	"rename_files", "undo_last_file_change", "recycle_files", "run_powershell", "save_routine", "run_routine", "open_app_or_file"]
+
+
 func _run_tool(name: String, input: Dictionary) -> String:
+	if name in PC_TOOLS:
+		if not pc.enabled():
+			return "PC tools are switched off (Settings > PC) or this isn't Windows."
+		return await _run_pc_tool(name, input)
 	match name:
 		"set_reminder":
 			var text := String(input.get("text", "Reminder"))
@@ -422,6 +477,53 @@ func _run_tool(name: String, input: Dictionary) -> String:
 				return "No saved project matches that. Saved: " + ", ".join(Cfg.g("projects").map(func(x): return x.name))
 			_open_project(p)
 			return "Opened " + p.name
+	return "Unknown tool."
+
+
+func _run_pc_tool(name: String, i: Dictionary) -> String:
+	match name:
+		"get_top_processes":
+			return await pc.top_processes_text(String(i.get("sort", "cpu")), int(i.get("count", 8)))
+		"scan_junk":
+			return JSON.stringify(await pc.junk_scan())
+		"list_startup_apps":
+			return JSON.stringify(await pc.startup_list())
+		"list_power_plans":
+			return JSON.stringify(await pc.power_list())
+		"system_health":
+			return JSON.stringify(await pc.health(bool(i.get("check_updates", false)), bool(i.get("admin_temps", false))))
+		"find_files":
+			return JSON.stringify(await pc.find_files(String(i.folder), String(i.get("kind", "big")), float(i.get("min_mb", 50)), int(i.get("limit", 15)))).left(6000)
+		"get_activity_log":
+			return pc.read_log(40)
+		"close_apps":
+			return await pc.close_apps(i.get("names", []), bool(i.get("force", false)), String(i.get("reason", "")))
+		"clean_junk":
+			return await pc.junk_clean(i.get("categories", []))
+		"set_startup_app":
+			return await pc.startup_set(String(i.name), bool(i.enabled))
+		"set_power_plan":
+			return await pc.power_set(String(i.plan))
+		"performance_mode":
+			if bool(i.get("on", true)):
+				return await pc.perf_mode_on(i.get("suggested_apps", []))
+			return await pc.perf_mode_off()
+		"tidy_folder":
+			return await pc.tidy(String(i.folder), String(i.get("by", "type")))
+		"rename_files":
+			return await pc.rename(String(i.folder), String(i.get("find", "")), String(i.get("replace", "")), String(i.get("prefix", "")), bool(i.get("number", false)), String(i.get("ext", "")))
+		"undo_last_file_change":
+			return await pc.undo_last()
+		"recycle_files":
+			return await pc.recycle(i.get("paths", []))
+		"run_powershell":
+			return await pc.run_command(String(i.command), String(i.get("explanation", "Run this command?")), bool(i.get("needs_admin", false)))
+		"save_routine":
+			return pc.save_routine(String(i.name), String(i.get("description", "")), i.get("steps", []))
+		"run_routine":
+			return await pc.run_routine(String(i.name))
+		"open_app_or_file":
+			return pc.open_target(String(i.target))
 	return "Unknown tool."
 
 
@@ -481,6 +583,141 @@ func _local_command(text: String) -> String:
 			out.append(reminders.describe(r))
 		return "Nothing pending. Living dangerously." if out.is_empty() else "\n".join(out)
 	return ""
+
+
+# ------------------------------------------------------------------ PC: approvals + menu flows
+
+## Shows an Allow / Deny card in the bubble and waits for the answer.
+func _request_approval(summary: String, details := "", checklist: Array = [], admin := false) -> Dictionary:
+	while _approval_pending:
+		await _approval_answered
+	_approval_pending = true
+	_show()
+	rico.wake()
+	rico.set_mood("think", 999)
+	var buttons := [["allow", "Allow"], ["deny", "Deny"]]
+	if details != "":
+		buttons.append(["details", "Show details"])
+	var text := summary + ("\n(This needs admin rights: Windows will ask too.)" if admin else "")
+	var keep: bool = bubble.chat_mode
+	bubble.say(text, -1, buttons, details, checklist)
+	bubble.chat_mode = keep
+	bubble.input_row.visible = keep
+	sfx.play("pop")
+	var res: Dictionary = await _approval_answered
+	rico.set_mood("smug", 1)
+	return res
+
+
+func _answer_approval(allowed: bool) -> void:
+	if not _approval_pending:
+		return
+	var checks: Array = bubble.get_checks()
+	_approval_pending = false
+	if allowed:
+		_say("On it...", -1, bubble.chat_mode)
+		rico.set_mood("happy", 1.2)
+	else:
+		_say("Fine, I won't.", 3, bubble.chat_mode)
+		rico.set_mood("annoyed", 1.5)
+	_approval_answered.emit({"allowed": allowed, "checked": checks})
+
+
+func _on_bubble_closed() -> void:
+	voice.stop_speaking()
+	if _approval_pending:
+		_answer_approval(false)
+
+
+func _pc_busy_say(text: String) -> void:
+	rico.thinking = true
+	_say(text, -1, bubble.chat_mode)
+
+
+func _on_pc_menu(id: int) -> void:
+	if _approval_pending:
+		_say("Answer my last question first.", 3)
+		return
+	match id:
+		0: _flow_slow()
+		1:
+			_pc_busy_say("Measuring your junk...")
+			var r: String = await pc.junk_clean()
+			_say(r, 8)
+		2:
+			if Cfg.g("perf_state", {}).get("on", false):
+				_pc_busy_say("Putting everything back...")
+				_say(await pc.perf_mode_off(), 6)
+			else:
+				_pc_busy_say("Checking what's running...")
+				var top: Dictionary = await pc.top_processes("memory", 12)
+				var suggest := []
+				var fg := _fg_exe.trim_suffix(".exe").to_lower()
+				for p in top.get("processes", []):
+					if not p.protected and p.name.to_lower() != fg and float(p.mem_mb) > 300:
+						suggest.append(p.name)
+				_say(await pc.perf_mode_on(suggest), 8)
+		3: _flow_health(false)
+		4: _open_settings(5)
+		5: _say(await pc.undo_last(), 5)
+		6: _open_settings(6)
+		_:
+			if id >= 100:
+				var routines: Array = Cfg.g("routines", [])
+				if id - 100 < routines.size():
+					_pc_busy_say("Running %s..." % routines[id - 100].name)
+					_say(await pc.run_routine(routines[id - 100].name, true), 6)
+
+
+func _flow_slow() -> void:
+	_pc_busy_say("Having a look at what's chewing your CPU...")
+	var r: Dictionary = await pc.top_processes("cpu", 8)
+	if r.has("error"):
+		_say("Couldn't check: " + str(r.error), 6)
+		return
+	var lines := ["CPU %s%%, RAM %s%% of %s GB used." % [r.total_cpu_percent, r.ram_used_percent, r.ram_total_gb]]
+	var buttons := []
+	var fg := _fg_exe.trim_suffix(".exe").to_lower()
+	for p in r.get("processes", []).slice(0, 5):
+		lines.append("%s: %s%% CPU, %s MB" % [p.name, p.cpu, p.mem_mb])
+		if not p.protected and buttons.size() < 2 and String(p.name).to_lower() != fg and (float(p.cpu) > 5 or float(p.mem_mb) > 800):
+			buttons.append(["close:" + String(p.name), "Close " + String(p.name)])
+	if float(r.ram_used_percent) > 85:
+		lines.append("RAM's nearly full, that's your slowdown.")
+	buttons.append(["dismiss", "Thanks"])
+	_say("\n".join(lines), -1, false, buttons)
+
+
+func _flow_health(admin_temps: bool) -> void:
+	_pc_busy_say("Giving your PC a check-up. Checking for updates takes about half a minute...")
+	var r: Dictionary = await pc.health(true, admin_temps)
+	if r.has("error"):
+		_say("Check-up failed: " + str(r.error), 6)
+		return
+	_say(_health_summary(r), -1, false, [["dismiss", "Nice"], ["temps_admin", "Check CPU temps (admin)"]] if not r.get("is_admin", false) else [["dismiss", "Nice"]])
+
+
+func _health_summary(r: Dictionary) -> String:
+	var out := []
+	for d in r.get("drives", []):
+		out.append("%s %s GB free (%s%%)%s" % [d.drive, d.free_gb, d.free_percent, ", getting tight" if float(d.free_percent) < 10 else ""])
+	out.append("RAM %s%% used of %s GB" % [r.get("ram_used_percent"), r.get("ram_total_gb")])
+	var up := float(r.get("uptime_days", 0))
+	out.append("Up %s days%s" % [up, ", a restart wouldn't hurt" if up > 7 else ""])
+	if r.get("reboot_pending", false):
+		out.append("A restart is pending for updates")
+	if r.get("pending_updates") != null:
+		out.append("%d updates waiting" % int(r.pending_updates) if int(r.pending_updates) > 0 else "Windows is up to date")
+	for g in r.get("gpus", []):
+		out.append("%s, driver from %s" % [g.name, g.driver_date])
+	var temps := []
+	for t in r.get("temperatures", []):
+		temps.append("%s %d C" % [t.device, int(t.celsius)])
+	if not temps.is_empty():
+		out.append("Temps: " + ", ".join(temps))
+	if String(r.get("temperature_note", "")) != "":
+		out.append(String(r.temperature_note))
+	return "Check-up:\n" + "\n".join(out)
 
 
 # ------------------------------------------------------------------ voice
@@ -561,8 +798,24 @@ func _on_break_due() -> void:
 
 
 func _on_bubble_action(id: String) -> void:
+	if id == "details":
+		bubble.toggle_details()
+		return
+	if id == "allow" or id == "deny":
+		_answer_approval(id == "allow")
+		return
+	if id.begins_with("close:"):
+		var name := id.substr(6)
+		_pc_busy_say("Closing %s..." % name)
+		_say(await pc.close_apps([name]), 6)
+		return
+	if id == "temps_admin":
+		_flow_health(true)
+		return
 	rico.alerting = false
 	match id:
+		"dismiss":
+			bubble.hide_bubble()
 		"done":
 			rico.set_mood("happy", 1.5)
 			bubble.hide_bubble()
@@ -729,7 +982,7 @@ func _process(delta: float) -> void:
 	if bubble.visible and not bubble.typing and bubble.chat_mode and mouse.distance_to(rico.position) > 600:
 		rico.look_at_pos = bubble.position + bubble.size * 0.5
 	rico.talking = bubble.visible and bubble.typing and bubble._full_text != "..."
-	rico.thinking = ai.busy or voice.busy
+	rico.thinking = (ai.busy or voice.busy or bubble._full_text.ends_with("...")) and not _approval_pending
 	if rico.talking and Cfg.g("talk_blips"):
 		_blip_acc += delta
 		if _blip_acc > 0.075:
@@ -770,6 +1023,10 @@ func _process(delta: float) -> void:
 		_say(_next_tip(_fg_kind), 9)
 
 	_poll_controller()
+	_report_timer -= delta
+	if _report_timer <= 0:
+		_report_timer = 60.0
+		_maybe_weekly_report()
 	if _dodge_check > 0:
 		_dodge_check -= delta
 		if _dodge_check <= 0:
@@ -784,6 +1041,21 @@ func _process(delta: float) -> void:
 	fx.queue_redraw()
 
 	_update_region()
+
+
+func _maybe_weekly_report() -> void:
+	if not Cfg.g("weekly_report", true) or not pc.enabled():
+		return
+	var now := Time.get_unix_time_from_system()
+	var last := float(Cfg.g("last_report", 0))
+	if last <= 0:
+		Cfg.s("last_report", now)
+		return
+	if now - last < 7 * 86400 or bubble.visible or rico.state == RicoScript.State.SLEEP:
+		return
+	Cfg.s("last_report", now)
+	_say("Weekly check-up time. Hold still.", -1)
+	_flow_health(false)
 
 
 func _next_quip_delay() -> float:
@@ -883,13 +1155,15 @@ func _on_combo(b: int) -> void:
 	match b:
 		JOY_BUTTON_A:
 			if bubble.actions_box.visible and bubble.actions_box.get_child_count() > 0:
-				_on_bubble_action("done")
+				_on_bubble_action(String(bubble.actions_box.get_child(0).get_meta("id", "done")))
 			else:
 				_open_chat()
 		JOY_BUTTON_X:
 			bubble.chat_mode = true
 			_toggle_voice()
 		JOY_BUTTON_B:
+			if _approval_pending:
+				_answer_approval(false)
 			bubble.hide_bubble()
 			voice.stop_speaking()
 		JOY_BUTTON_Y:

@@ -10,6 +10,12 @@ const ACCENT := Color("e0ab45")
 
 var reminders: Node
 var voice: Node
+var pc: Node
+var _perf_list: ItemList
+var _startup_list: ItemList
+var _startup_items: Array = []
+var _routine_list: ItemList
+var _log_view: TextEdit
 var tabs: TabContainer
 var _rem_list: ItemList
 var _proj_list: ItemList
@@ -50,6 +56,8 @@ func build() -> void:
 	_build_reminders()
 	_build_projects()
 	_build_rico()
+	_build_pc()
+	_build_activity()
 	_build_help()
 
 	_file_dialog = FileDialog.new()
@@ -408,6 +416,148 @@ func _set_autostart(on: bool) -> void:
 		OS.execute("reg", ["delete", key, "/v", "Rico", "/f"])
 
 
+func _build_pc() -> void:
+	var v := _page("PC")
+	_heading(v, "PC tools")
+	_check(v, "Let Rico look after my PC (he always asks before changing anything)", "pc_tools")
+	_check(v, "Weekly check-up (disk, updates, temperatures)", "weekly_report")
+
+	_heading(v, "Game/Render mode: apps to close")
+	_label(v, "Process names, e.g. Discord, Spotify, steamwebhelper, OneDrive. Rico also suggests extra hogs each time; you tick what goes.", true)
+	_perf_list = ItemList.new()
+	_perf_list.custom_minimum_size = Vector2(0, 110)
+	v.add_child(_perf_list)
+	var h := HBoxContainer.new()
+	v.add_child(h)
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Process name"
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	h.add_child(name_edit)
+	var add := Button.new()
+	add.text = "Add"
+	add.pressed.connect(func():
+		var n := name_edit.text.strip_edges().trim_suffix(".exe")
+		if n != "":
+			var l: Array = Cfg.g("perf_apps", []).duplicate()
+			if not n in l:
+				l.append(n)
+			Cfg.s("perf_apps", l)
+			name_edit.clear()
+			refresh_pc())
+	h.add_child(add)
+	var rem := Button.new()
+	rem.text = "Remove"
+	rem.pressed.connect(func():
+		var l: Array = Cfg.g("perf_apps", []).duplicate()
+		var sel := _perf_list.get_selected_items()
+		sel.reverse()
+		for i in sel:
+			l.remove_at(i)
+		Cfg.s("perf_apps", l)
+		refresh_pc())
+	h.add_child(rem)
+
+	_heading(v, "Startup apps")
+	_startup_list = ItemList.new()
+	_startup_list.custom_minimum_size = Vector2(0, 150)
+	v.add_child(_startup_list)
+	var sh := HBoxContainer.new()
+	sh.add_theme_constant_override("separation", 8)
+	v.add_child(sh)
+	var ref := Button.new()
+	ref.text = "Load list"
+	ref.pressed.connect(refresh_startup)
+	sh.add_child(ref)
+	for on in [false, true]:
+		var b := Button.new()
+		b.text = "Turn on" if on else "Turn off"
+		b.pressed.connect(func():
+			for i in _startup_list.get_selected_items():
+				if i < _startup_items.size():
+					await pc.startup_set(String(_startup_items[i].name), on)
+			refresh_startup())
+		sh.add_child(b)
+	_label(v, "Rico shows an Allow card on screen before switching anything.", true)
+
+	_heading(v, "Routines")
+	_label(v, "Make them by asking Rico, e.g. \"make a Work routine that opens Godot and Blender and closes Discord\". Run them here or from Rico's right-click menu, PC.", true)
+	_routine_list = ItemList.new()
+	_routine_list.custom_minimum_size = Vector2(0, 110)
+	v.add_child(_routine_list)
+	var rh := HBoxContainer.new()
+	rh.add_theme_constant_override("separation", 8)
+	v.add_child(rh)
+	var run := Button.new()
+	run.text = "Run"
+	run.pressed.connect(func():
+		var sel := _routine_list.get_selected_items()
+		if not sel.is_empty():
+			await pc.run_routine(String(Cfg.g("routines")[sel[0]].name), true))
+	rh.add_child(run)
+	var del := Button.new()
+	del.text = "Delete"
+	del.pressed.connect(func():
+		var l: Array = Cfg.g("routines", []).duplicate(true)
+		var sel := _routine_list.get_selected_items()
+		sel.reverse()
+		for i in sel:
+			l.remove_at(i)
+		Cfg.s("routines", l)
+		refresh_pc())
+	rh.add_child(del)
+	refresh_pc()
+
+
+func refresh_pc() -> void:
+	if _perf_list == null:
+		return
+	_perf_list.clear()
+	for n in Cfg.g("perf_apps", []):
+		_perf_list.add_item(String(n))
+	_routine_list.clear()
+	for r in Cfg.g("routines", []):
+		_routine_list.add_item("%s   —   %s" % [r.name, r.get("description", "%d steps" % r.get("steps", []).size())])
+
+
+func refresh_startup() -> void:
+	_startup_list.clear()
+	_startup_list.add_item("Loading...")
+	var r: Dictionary = await pc.startup_list()
+	_startup_list.clear()
+	_startup_items = r.get("items", [])
+	if r.has("error"):
+		_startup_list.add_item(str(r.error))
+	for it in _startup_items:
+		_startup_list.add_item("%s %s%s" % ["[on] " if it.enabled else "[off]", it.name, "  (admin)" if it.needs_admin else ""])
+
+
+func _build_activity() -> void:
+	var v := _page("Activity")
+	_heading(v, "What Rico has done on this PC")
+	_log_view = TextEdit.new()
+	_log_view.editable = false
+	_log_view.custom_minimum_size = Vector2(0, 420)
+	_log_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_log_view.add_theme_color_override("font_readonly_color", INK)
+	_log_view.add_theme_font_size_override("font_size", 13)
+	var lbg := StyleBoxFlat.new()
+	lbg.bg_color = Color("1a120d")
+	lbg.set_corner_radius_all(8)
+	lbg.set_content_margin_all(8)
+	_log_view.add_theme_stylebox_override("read_only", lbg)
+	_log_view.add_theme_stylebox_override("normal", lbg)
+	v.add_child(_log_view)
+	var b := Button.new()
+	b.text = "Refresh"
+	b.pressed.connect(refresh_log)
+	v.add_child(b)
+
+
+func refresh_log() -> void:
+	if _log_view and pc:
+		_log_view.text = pc.read_log()
+
+
 func _build_help() -> void:
 	var v := _page("Help")
 	_heading(v, "Mouse")
@@ -416,5 +566,7 @@ func _build_help() -> void:
 	_label(v, "Ctrl+Shift+Space: open chat\nCtrl+Alt+Space: talk (press again to stop)\nCtrl+Alt+R: hide or show Rico\nEsc: close the bubble")
 	_heading(v, "Controller (hold View/Back, then press)")
 	_label(v, "A: open chat or confirm\nX: talk / stop talking\nB: close the bubble\nY: hide or show Rico\nD-pad: move between buttons")
+	_heading(v, "PC jobs to try")
+	_label(v, "\"Why is my PC slow?\"\n\"Clean up my junk\"\n\"Game mode on\" / \"Game mode off\"\n\"Tidy my Downloads\"\n\"Find my biggest files in Documents\"\n\"How hot is my PC running?\"\n\"Stop Spotify starting with Windows\"\n\"Make a Work routine that opens Godot and Blender\"")
 	_heading(v, "Things to say")
 	_label(v, "\"Remind me in 25 minutes to check the bake\"\n\"Set a timer for 5 minutes\"\n\"What reminders have I got?\"\n\"Open Zuri\"\n\"How do I make a one-way collision platform in Godot?\"")

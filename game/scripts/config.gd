@@ -25,6 +25,13 @@ var data := {
 	"rico_x": -1.0,
 	"dodge": true,
 	"app_spots": {},           # exe name -> x position
+	"pc_tools": true,
+	"weekly_report": true,
+	"last_report": 0.0,
+	"perf_apps": [],
+	"perf_state": {},
+	"routines": [],
+	"last_undo": {},
 }
 
 
