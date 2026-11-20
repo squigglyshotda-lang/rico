@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NSIS
+        run: sudo apt-get update -q && sudo apt-get install -y -q nsis
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache
+            ~/.local/share/godot/export_templates
+          key: rico-deps-godot441-whisper176-llama12590-lhm096
+      - name: Build installer
+        run: bash ci/build.sh "${GITHUB_REF_NAME#v}"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES="release-notes/${GITHUB_REF_NAME}.md"
+          [ -f "$NOTES" ] || echo "Rico ${VERSION}" > "$NOTES"
+          gh release create "$GITHUB_REF_NAME" "build/Rico-Setup-${VERSION}.exe" --title "Rico ${VERSION}" --notes-file "$NOTES"

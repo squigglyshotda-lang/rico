@@ -2,3 +2,4 @@ build/
 game/.godot/
 helper/*.pdb
 installer/*.exe
+.cache/
