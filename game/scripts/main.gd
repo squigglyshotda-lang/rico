@@ -15,6 +15,7 @@ const MemScript := preload("res://scripts/memory.gd")
 const BrainScript := preload("res://scripts/brain.gd")
 const QuickScript := preload("res://scripts/quick.gd")
 const SearchScript := preload("res://scripts/search.gd")
+const UI := preload("res://scripts/ui.gd")
 
 signal _approval_answered(result: Dictionary)
 
@@ -162,6 +163,9 @@ func _ready() -> void:
 			print(q, " | local=", "HANDLED" if l == HANDLED else l.left(40), " | groups=", ai.groups_for(q), " hard=", ai.is_hard(q), " claude=", ai.needs_tools(q) or ai.is_hard(q) or _wants_claude(q))
 		get_tree().quit()
 		return
+	if OS.has_environment("RICO_SHOT_UI"):
+		_run_ui_shot.call_deferred()
+		return
 	if OS.has_environment("RICO_SHOT_SEARCH"):
 		_run_search_shot.call_deferred()
 		return
@@ -199,6 +203,65 @@ func _run_dodge_test() -> void:
 	_on_focus_rect(Rect2i(wp.x + 200, wp.y + 100, 600, 400), "notepad.exe")
 	await tree.create_timer(3.0).timeout
 	print("small window up top: x=", rico.position.x)
+	tree.quit()
+
+
+func _run_ui_shot() -> void:
+	var out := OS.get_environment("RICO_SHOT_UI")
+	Cfg.data.volume = 0.0
+	Cfg.data.wander = false
+	var tree := get_tree()
+	var snap := func(n: String): get_viewport().get_texture().get_image().save_png(out.path_join(n + ".png"))
+	rico.position.x = 700
+	await tree.create_timer(1.2).timeout
+	_say("Rico, reporting for duty. Try not to make it boring.", 99)
+	await tree.create_timer(2.0).timeout
+	snap.call("u_say")
+	bubble.hide_bubble()
+	await tree.create_timer(0.4).timeout
+	bubble.chat_mode = true
+	_say("...", -1, true)
+	await tree.create_timer(0.7).timeout
+	snap.call("u_dots")
+	_reply("Bake your normals with Cycles: select the low poly last, tick Selected to Active and nudge the extrusion until the lumps vanish.", "Haiku · 0.02p")
+	await tree.create_timer(3.0).timeout
+	snap.call("u_chat")
+	_request_approval("Clean up junk? Up to 2340 MB can be freed. Untick anything you want to keep.", "Get-ChildItem $env:TEMP -Recurse | Remove-Item", [["a", "Your temp files: 1210 MB", true], ["b", "Browser caches: 860 MB", true], ["c", "Recycle Bin: 270 MB", false]])
+	await tree.create_timer(0.5).timeout
+	bubble.toggle_details()
+	await tree.create_timer(2.5).timeout
+	snap.call("u_approve")
+	_answer_approval(false)
+	await tree.create_timer(0.3).timeout
+	_on_reminder_due({"text": "Check the render, it's been an hour."})
+	await tree.create_timer(2.0).timeout
+	snap.call("u_alert")
+	bubble.hide_bubble()
+	rico.alerting = false
+	await tree.create_timer(0.5).timeout
+	search.apps = [{"name": "Blender 4.2", "id": "x"}, {"name": "Godot Engine", "id": "z"}]
+	await _open_search("ble")
+	search._files = [{"name": "bullet_hero.blend", "path": "C:/Users/Pierre/Art/bullet_hero.blend", "size": 48234567.0, "modified": "2026-11-19 22:10", "folder": false},
+		{"name": "Blender renders", "path": "C:/Users/Pierre/Pictures/Blender renders", "size": -1.0, "modified": "2026-11-12 18:40", "folder": true}]
+	search._rebuild()
+	search.move(1)
+	await tree.create_timer(1.0).timeout
+	snap.call("u_search")
+	search.close()
+	await tree.create_timer(1.0).timeout
+	_refresh_projects_menu()
+	_refresh_pc_menu()
+	menu.position = Vector2i(900, 300)
+	menu.popup()
+	await tree.create_timer(0.6).timeout
+	menu.get_texture().get_image().save_png(out.path_join("u_menu.png"))
+	menu.hide()
+	_open_settings(7)
+	await tree.create_timer(1.0).timeout
+	settings.get_texture().get_image().save_png(out.path_join("u_settings.png"))
+	_open_settings(5)
+	await tree.create_timer(1.0).timeout
+	settings.get_texture().get_image().save_png(out.path_join("u_settings_pc.png"))
 	tree.quit()
 
 
@@ -294,36 +357,40 @@ func _fit_to_screen() -> void:
 
 func _build_menu() -> void:
 	menu = PopupMenu.new()
+	menu.theme = UI.theme()
 	add_child(menu)
 	timer_menu = PopupMenu.new()
+	timer_menu.theme = UI.theme()
 	for m in [5, 10, 15, 25, 45, 60]:
-		timer_menu.add_item("%d minutes" % m, m)
+		timer_menu.add_item(UI.icon("clock") + "   %d minutes" % m, m)
 	timer_menu.id_pressed.connect(func(id):
 		reminders.add("Your %d minute timer's done." % id, id)
 		_say("Timer set: %d minutes. Tick tock." % id, 4))
 	projects_menu = PopupMenu.new()
+	projects_menu.theme = UI.theme()
 	projects_menu.id_pressed.connect(func(id):
 		var list: Array = Cfg.g("projects")
 		if id < list.size():
 			_open_project(list[id]))
-	menu.add_item("Search (Alt+Space)", 8)
-	menu.add_item("Chat with Rico", 0)
-	menu.add_item("Talk (voice)", 1)
+	menu.add_item(UI.icon("search") + "   Search          Alt+Space", 8)
+	menu.add_item(UI.icon("chat") + "   Chat with Rico", 0)
+	menu.add_item(UI.icon("mic") + "   Talk", 1)
 	menu.add_separator()
-	menu.add_submenu_node_item("Quick timer", timer_menu)
-	menu.add_submenu_node_item("Open project", projects_menu)
+	menu.add_submenu_node_item(UI.icon("clock") + "   Quick timer", timer_menu)
+	menu.add_submenu_node_item(UI.icon("rocket") + "   Open project", projects_menu)
 	pc_menu = PopupMenu.new()
+	pc_menu.theme = UI.theme()
 	pc_menu.id_pressed.connect(_on_pc_menu)
-	menu.add_submenu_node_item("PC", pc_menu)
-	menu.add_item("Reminders...", 2)
+	menu.add_submenu_node_item(UI.icon("cpu") + "   PC", pc_menu)
+	menu.add_item(UI.icon("bell") + "   Reminders", 2)
 	menu.add_separator()
-	menu.add_item("Settings...", 3)
-	menu.add_item("New conversation", 4)
-	menu.add_item("Forget my spot for this app", 7)
-	menu.add_item("Take a nap", 5)
-	menu.add_item("Hide for 30 minutes", 6)
+	menu.add_item(UI.icon("settings") + "   Settings", 3)
+	menu.add_item(UI.icon("history") + "   New conversation", 4)
+	menu.add_item(UI.icon("desktop") + "   Forget my spot for this app", 7)
+	menu.add_item(UI.icon("notes") + "   Take a nap", 5)
+	menu.add_item(UI.icon("x") + "   Hide for 30 minutes", 6)
 	menu.add_separator()
-	menu.add_item("Quit Rico", 9)
+	menu.add_item(UI.icon("power") + "   Quit Rico", 9)
 	menu.id_pressed.connect(_on_menu)
 	menu.about_to_popup.connect(_refresh_projects_menu)
 	menu.about_to_popup.connect(_refresh_pc_menu)
@@ -331,20 +398,20 @@ func _build_menu() -> void:
 
 func _refresh_pc_menu() -> void:
 	pc_menu.clear()
-	pc_menu.add_item("What's slowing me down?", 0)
-	pc_menu.add_item("Clean up junk...", 1)
+	pc_menu.add_item(UI.icon("activity") + "   What's slowing me down?", 0)
+	pc_menu.add_item(UI.icon("trash") + "   Clean up junk", 1)
 	var perf_on: bool = Cfg.g("perf_state", {}).get("on", false)
-	pc_menu.add_item("Game/Render mode: turn OFF" if perf_on else "Game/Render mode: turn ON", 2)
-	pc_menu.add_item("Health check", 3)
-	pc_menu.add_item("Startup apps...", 4)
+	pc_menu.add_item(UI.icon("rocket") + ("   Game/Render mode: turn off" if perf_on else "   Game/Render mode: turn on"), 2)
+	pc_menu.add_item(UI.icon("shield") + "   Health check", 3)
+	pc_menu.add_item(UI.icon("power") + "   Startup apps", 4)
 	if not Cfg.g("last_undo", {}).is_empty():
-		pc_menu.add_item("Undo last %s" % Cfg.g("last_undo").label, 5)
-	pc_menu.add_item("Activity log...", 6)
+		pc_menu.add_item(UI.icon("history") + "   Undo last %s" % Cfg.g("last_undo").label, 5)
+	pc_menu.add_item(UI.icon("notes") + "   Activity log", 6)
 	var routines: Array = Cfg.g("routines", [])
 	if not routines.is_empty():
 		pc_menu.add_separator("Routines")
 		for i in routines.size():
-			pc_menu.add_item("Run: " + String(routines[i].name), 100 + i)
+			pc_menu.add_item(UI.icon("play") + "   " + String(routines[i].name), 100 + i)
 	if not pc.enabled():
 		for i in pc_menu.item_count:
 			pc_menu.set_item_disabled(i, true)
@@ -467,7 +534,7 @@ func _open_chat() -> void:
 	rico.waving = 1.2
 	if not ai.has_key():
 		bubble.open_chat(Lines.NO_KEY)
-	elif bubble.visible and bubble.chat_mode:
+	elif bubble.is_open() and bubble.chat_mode:
 		bubble.open_chat()
 	else:
 		bubble.open_chat(Lines.pick(["What now?", "Go on then. Ask.", "Rico's listening. Mostly.", "Yes? Make it interesting."]))
@@ -1135,7 +1202,7 @@ func _on_model_download(p: String) -> void:
 		"done":
 			_say("Ears installed. Press Ctrl+Alt+Space (or Mic) and talk.", 6, bubble.chat_mode)
 			sfx.play("pop")
-		_: if bubble.visible: bubble.text_label.text = "Downloading my ears... %s%%" % p
+		_: if bubble.is_open(): bubble.text_label.text = "Downloading my ears... %s%%" % p
 
 
 func _on_transcribing() -> void:
@@ -1160,7 +1227,7 @@ func _on_voice_started() -> void:
 
 func _on_voice_heard(text: String) -> void:
 	rico.listening = false
-	if _voice_for_search and search.visible:
+	if _voice_for_search and search.is_open():
 		_voice_for_search = false
 		bubble.hide_bubble()
 		search.set_query(text)
@@ -1183,7 +1250,7 @@ func _on_reminder_due(r: Dictionary) -> void:
 	rico.jump_for_joy()
 	sfx.play("alert")
 	var text := "Oi! %s" % r.text
-	_say(text, -1, false, [["done", "Done"], ["snooze5", "Snooze 5 min"], ["snooze15", "15 min"]])
+	_say(text, -1, false, [["done", "Done"], ["snooze5", "5 min"], ["snooze15", "15 min"]])
 	if int(Cfg.g("speak_replies", 1)) == 2:
 		voice.speak(text)
 
@@ -1240,7 +1307,7 @@ func _on_bubble_action(id: String) -> void:
 func _on_hotkey(name: String) -> void:
 	match name:
 		"chat":
-			if bubble.visible and bubble.chat_mode and get_window().visible:
+			if bubble.is_open() and bubble.chat_mode and get_window().visible:
 				bubble.hide_bubble()
 			else:
 				_open_chat()
@@ -1251,7 +1318,7 @@ func _on_hotkey(name: String) -> void:
 		"toggle":
 			_toggle_visible()
 		"search":
-			if search.visible:
+			if search.is_open():
 				search.close()
 			else:
 				_open_search()
@@ -1407,9 +1474,9 @@ func _process(delta: float) -> void:
 
 	# eyes
 	rico.look_at_pos = mouse
-	if bubble.visible and not bubble.typing and bubble.chat_mode and mouse.distance_to(rico.position) > 600:
+	if bubble.is_open() and not bubble.typing and bubble.chat_mode and mouse.distance_to(rico.position) > 600:
 		rico.look_at_pos = bubble.position + bubble.size * 0.5
-	rico.talking = bubble.visible and bubble.typing and bubble._full_text != "..."
+	rico.talking = bubble.is_open() and bubble.typing and bubble._full_text != "..."
 	rico.thinking = (ai.busy or voice.busy or bubble._full_text.ends_with("...")) and not _approval_pending
 	if rico.talking and Cfg.g("talk_blips"):
 		_blip_acc += delta
@@ -1442,19 +1509,19 @@ func _process(delta: float) -> void:
 	else:
 		_mouse_still += delta
 	_mouse_prev = mouse
-	if _mouse_still > 300.0 and not bubble.visible and rico.state == RicoScript.State.IDLE:
+	if _mouse_still > 300.0 and not bubble.is_open() and rico.state == RicoScript.State.IDLE:
 		rico.sleep()
 
 	# idle quips + app tips
 	var chat := int(Cfg.g("chattiness", 1))
-	if not bubble.visible and rico.state in [RicoScript.State.IDLE, RicoScript.State.HOP] and win.visible:
+	if not bubble.is_open() and rico.state in [RicoScript.State.IDLE, RicoScript.State.HOP] and win.visible:
 		_quip_timer -= delta
 		if _quip_timer <= 0 and chat > 0:
 			_quip_timer = _next_quip_delay()
 			_say(Lines.pick(Lines.IDLE), 6)
 	_kind_time += delta
 	_tip_cooldown -= delta
-	if Cfg.g("app_tips") and _fg_kind != "" and _kind_time > 150.0 and _tip_cooldown <= 0 and not bubble.visible and win.visible and rico.state != RicoScript.State.SLEEP:
+	if Cfg.g("app_tips") and _fg_kind != "" and _kind_time > 150.0 and _tip_cooldown <= 0 and not bubble.is_open() and win.visible and rico.state != RicoScript.State.SLEEP:
 		_tip_cooldown = [1800.0, 720.0, 360.0][chat]
 		_say(_next_tip(_fg_kind), 9)
 
@@ -1487,7 +1554,7 @@ func _maybe_weekly_report() -> void:
 	if last <= 0:
 		Cfg.s("last_report", now)
 		return
-	if now - last < 7 * 86400 or bubble.visible or rico.state == RicoScript.State.SLEEP:
+	if now - last < 7 * 86400 or bubble.is_open() or rico.state == RicoScript.State.SLEEP:
 		return
 	Cfg.s("last_report", now)
 	_say("Weekly check-up time. Hold still.", -1)
@@ -1564,7 +1631,7 @@ func _on_rico_clicked() -> void:
 		rico.wake()
 		_say(Lines.pick(Lines.WAKE), 4)
 		return
-	if bubble.visible and bubble.chat_mode:
+	if bubble.is_open() and bubble.chat_mode:
 		bubble.input.grab_focus()
 		return
 	if bubble.is_busy_with_user():
@@ -1575,7 +1642,7 @@ func _on_rico_clicked() -> void:
 
 func _poll_controller() -> void:
 	var pads := Input.get_connected_joypads()
-	if search.visible:
+	if search.is_open():
 		for b in [JOY_BUTTON_DPAD_UP, JOY_BUTTON_DPAD_DOWN, JOY_BUTTON_A, JOY_BUTTON_B, JOY_BUTTON_X, JOY_BUTTON_Y]:
 			var dn := false
 			for d in pads:

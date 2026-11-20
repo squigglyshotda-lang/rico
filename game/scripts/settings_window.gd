@@ -4,10 +4,15 @@ extends Window
 signal test_requested
 signal brain_download_requested
 
-const BG := Color("231812")
-const CARD := Color("33231a")
-const INK := Color("fff3df")
-const ACCENT := Color("e0ab45")
+const UI := preload("res://scripts/ui.gd")
+const BG := Color(0.085, 0.08, 0.095)
+const CARD := Color(1, 1, 1, 0.035)
+const INK := UI.TEXT
+const ACCENT := UI.COPPER_HI
+const TAB_ICONS := {"Chat": "chat", "Voice": "mic", "Reminders": "bell", "Projects": "rocket", "Rico": "sparkles", "PC": "cpu", "Activity": "activity", "Usage": "coin", "Help": "info"}
+
+var _nav: VBoxContainer
+var _nav_buttons: Array = []
 
 var reminders: Node
 var voice: Node
@@ -32,8 +37,8 @@ var _status: Label
 
 func _init() -> void:
 	title = "Rico Settings"
-	size = Vector2i(600, 640)
-	min_size = Vector2i(520, 520)
+	size = Vector2i(820, 660)
+	min_size = Vector2i(700, 520)
 	transient = false
 	exclusive = false
 	wrap_controls = false
@@ -42,20 +47,50 @@ func _init() -> void:
 
 
 func build() -> void:
-	theme = _make_theme()
+	theme = UI.theme()
 	var bg := Panel.new()
-	var bgs := StyleBoxFlat.new()
-	bgs.bg_color = BG
-	bg.add_theme_stylebox_override("panel", bgs)
+	bg.add_theme_stylebox_override("panel", UI.box(BG, 0, Color(0, 0, 0, 0), 0, 0))
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
+	var root := HBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_theme_constant_override("separation", 0)
+	add_child(root)
+
+	# sidebar
+	var side := PanelContainer.new()
+	side.custom_minimum_size.x = 200
+	side.add_theme_stylebox_override("panel", UI.box(Color(0, 0, 0, 0.25), 0, Color(0, 0, 0, 0), 0, 14))
+	root.add_child(side)
+	_nav = VBoxContainer.new()
+	_nav.add_theme_constant_override("separation", 4)
+	side.add_child(_nav)
+	var brand := HBoxContainer.new()
+	brand.add_theme_constant_override("separation", 10)
+	_nav.add_child(brand)
+	var logo := TextureRect.new()
+	logo.texture = load("res://assets/icon.png")
+	logo.custom_minimum_size = Vector2(36, 36)
+	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	brand.add_child(logo)
+	var bl := Label.new()
+	bl.text = "Rico"
+	bl.add_theme_font_override("font", UI.bold())
+	bl.add_theme_font_size_override("font_size", 22)
+	brand.add_child(bl)
+	var spacer := Control.new()
+	spacer.custom_minimum_size.y = 14
+	_nav.add_child(spacer)
+
 	var margin := MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 14)
-	add_child(margin)
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for m in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + m, 22)
+	root.add_child(margin)
 	tabs = TabContainer.new()
+	tabs.tabs_visible = false
 	margin.add_child(tabs)
 
 	_build_chat()
@@ -68,6 +103,21 @@ func build() -> void:
 	_build_usage()
 	_build_help()
 
+	for i in tabs.get_tab_count():
+		var nm := tabs.get_tab_title(i)
+		var b := Button.new()
+		b.text = UI.icon(TAB_ICONS.get(nm, "info")) + "   " + nm
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.theme_type_variation = "Ghost"
+		b.custom_minimum_size.y = 40
+		b.add_theme_font_size_override("font_size", 16)
+		var idx := i
+		b.pressed.connect(func(): tabs.current_tab = idx)
+		_nav.add_child(b)
+		_nav_buttons.append(b)
+	tabs.tab_changed.connect(_mark_nav)
+	_mark_nav(0)
+
 	_file_dialog = FileDialog.new()
 	_file_dialog.use_native_dialog = true
 	_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -76,6 +126,22 @@ func build() -> void:
 	_file_dialog.file_selected.connect(_add_project)
 	_file_dialog.dir_selected.connect(_add_project)
 	add_child(_file_dialog)
+
+
+func _mark_nav(cur: int) -> void:
+	for i in _nav_buttons.size():
+		var b: Button = _nav_buttons[i]
+		var on := i == cur
+		if on:
+			b.add_theme_stylebox_override("normal", UI.box(Color(UI.COPPER, 0.9), 10, Color(1, 1, 1, 0.15), 1, 6))
+			b.add_theme_stylebox_override("hover", UI.box(UI.COPPER_HI, 10, Color(1, 1, 1, 0.2), 1, 6))
+			b.add_theme_color_override("font_color", Color.WHITE)
+			b.add_theme_color_override("font_hover_color", Color.WHITE)
+		else:
+			b.remove_theme_stylebox_override("normal")
+			b.remove_theme_stylebox_override("hover")
+			b.remove_theme_color_override("font_color")
+			b.remove_theme_color_override("font_hover_color")
 
 
 func _make_theme() -> Theme:
@@ -147,15 +213,20 @@ func _label(parent: Node, text: String, small := false) -> Label:
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	if small:
 		l.add_theme_font_size_override("font_size", 13)
-		l.add_theme_color_override("font_color", Color(INK, 0.65))
+		l.add_theme_color_override("font_color", UI.TEXT_2)
 	parent.add_child(l)
 	return l
 
 
 func _heading(parent: Node, text: String) -> void:
+	if parent.get_child_count() > 0:
+		var gap := Control.new()
+		gap.custom_minimum_size.y = 8
+		parent.add_child(gap)
 	var l := _label(parent, text)
-	l.add_theme_color_override("font_color", ACCENT)
-	l.add_theme_font_size_override("font_size", 18)
+	l.add_theme_color_override("font_color", INK)
+	l.add_theme_font_override("font", UI.bold())
+	l.add_theme_font_size_override("font_size", 19)
 
 
 func _check(parent: Node, text: String, key: String, cb := Callable()) -> CheckBox:

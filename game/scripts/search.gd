@@ -3,14 +3,19 @@ extends Control
 ## Sources: quick answers, apps, Rico's own actions, files (Windows Search index),
 ## then Google and "Ask Rico" as fallbacks.
 
+const UI := preload("res://scripts/ui.gd")
+
 signal closed
 signal ask_rico(text: String)
 signal rico_action(id: String)
 signal voice_requested
 
-const INK := Color("2a1a10")
-const PAPER := Color("fffaf0")
-const ACCENT := Color("d06d3c")
+const ACCENT := UI.COPPER
+const T_APP := Color("8db8ff")
+const T_FILE := Color("c2b0ff")
+const T_DIR := Color("f2c96f")
+const T_ANSWER := Color("86dba8")
+const T_WEB := Color("94cdea")
 const MAX_ROWS := 9
 const WIDTH := 640.0
 const PREVIEW_W := 250.0
@@ -48,6 +53,7 @@ var _thumbs := {}
 func _ready() -> void:
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	theme = UI.theme()
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 10)
 	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -55,7 +61,8 @@ func _ready() -> void:
 
 	panel = PanelContainer.new()
 	panel.custom_minimum_size.x = WIDTH
-	panel.add_theme_stylebox_override("panel", _box(PAPER, INK, 3, 20, 14))
+	panel.add_theme_stylebox_override("panel", UI.glass_panel(22, 14))
+	UI.add_sheen(panel, 22)
 	h.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 6)
@@ -65,18 +72,18 @@ func _ready() -> void:
 	top.add_theme_constant_override("separation", 10)
 	v.add_child(top)
 	var glass := Label.new()
-	glass.text = "⌕"
-	glass.add_theme_font_size_override("font_size", 30)
-	glass.add_theme_color_override("font_color", ACCENT)
+	glass.text = UI.icon("search")
+	glass.add_theme_font_size_override("font_size", 26)
+	glass.add_theme_color_override("font_color", UI.COPPER_HI)
 	top.add_child(glass)
 	input = LineEdit.new()
 	input.placeholder_text = "Search apps, files, or ask Rico..."
 	input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	input.custom_minimum_size.y = 48
 	input.add_theme_font_size_override("font_size", 24)
-	input.add_theme_color_override("font_color", INK)
-	input.add_theme_color_override("font_placeholder_color", Color(INK, 0.4))
-	input.add_theme_color_override("caret_color", ACCENT)
+	input.add_theme_color_override("font_color", UI.TEXT)
+	input.add_theme_color_override("font_placeholder_color", UI.TEXT_3)
+	input.add_theme_color_override("caret_color", UI.COPPER_HI)
 	var empty := StyleBoxEmpty.new()
 	input.add_theme_stylebox_override("normal", empty)
 	input.add_theme_stylebox_override("focus", empty)
@@ -86,8 +93,8 @@ func _ready() -> void:
 
 	var sep := HSeparator.new()
 	var sl := StyleBoxLine.new()
-	sl.color = Color(INK, 0.15)
-	sl.thickness = 2
+	sl.color = Color(1, 1, 1, 0.08)
+	sl.thickness = 1
 	sep.add_theme_stylebox_override("separator", sl)
 	v.add_child(sep)
 
@@ -98,16 +105,17 @@ func _ready() -> void:
 		rows.append(_make_row(i))
 
 	footer = Label.new()
-	footer.text = "Enter open   Ctrl+Enter show in folder   Tab ask Rico   Ctrl+C copy   Esc close"
+	footer.text = UI.icon("keyboard") + "   Enter open  ·  Ctrl+Enter show in folder  ·  Tab ask Rico  ·  Ctrl+C copy  ·  Esc close"
 	footer.add_theme_font_size_override("font_size", 12)
-	footer.add_theme_color_override("font_color", Color(INK, 0.5))
+	footer.add_theme_color_override("font_color", UI.TEXT_3)
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(footer)
 
 	preview = PanelContainer.new()
 	preview.custom_minimum_size = Vector2(PREVIEW_W, 0)
 	preview.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	preview.add_theme_stylebox_override("panel", _box(PAPER, INK, 3, 18, 14))
+	preview.add_theme_stylebox_override("panel", UI.glass_panel(18, 14))
+	UI.add_sheen(preview)
 	h.add_child(preview)
 	var pv := VBoxContainer.new()
 	pv.add_theme_constant_override("separation", 8)
@@ -120,12 +128,12 @@ func _ready() -> void:
 	pv_title = Label.new()
 	pv_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	pv_title.add_theme_font_size_override("font_size", 17)
-	pv_title.add_theme_color_override("font_color", INK)
+	pv_title.add_theme_color_override("font_color", UI.TEXT)
 	pv.add_child(pv_title)
 	pv_body = Label.new()
 	pv_body.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	pv_body.add_theme_font_size_override("font_size", 13)
-	pv_body.add_theme_color_override("font_color", Color(INK, 0.7))
+	pv_body.add_theme_color_override("font_color", UI.TEXT_2)
 	pv.add_child(pv_body)
 	preview.visible = false
 
@@ -151,11 +159,10 @@ func _make_row(i: int) -> Dictionary:
 	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pc.add_child(h)
 	var badge := Label.new()
-	badge.custom_minimum_size = Vector2(40, 34)
+	badge.custom_minimum_size = Vector2(38, 38)
 	badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	badge.add_theme_font_size_override("font_size", 12)
-	badge.add_theme_color_override("font_color", Color.WHITE)
+	badge.add_theme_font_size_override("font_size", 19)
 	h.add_child(badge)
 	var tv := VBoxContainer.new()
 	tv.add_theme_constant_override("separation", -2)
@@ -186,8 +193,19 @@ func _make_row(i: int) -> Dictionary:
 
 # ------------------------------------------------------------------ open / close
 
+var _closing := false
+
+
+func is_open() -> bool:
+	return visible and not _closing
+
+
 func open(prefill := "") -> void:
 	_ensure_server()
+	_closing = false
+	if not visible:
+		UI.pop_in(self, 0.94, 0.2)
+		pivot_offset = Vector2(WIDTH * 0.5, 30)
 	visible = true
 	input.text = prefill
 	input.caret_column = prefill.length()
@@ -198,10 +216,12 @@ func open(prefill := "") -> void:
 
 
 func close() -> void:
-	if not visible:
+	if not visible or _closing:
 		return
-	visible = false
+	_closing = true
 	input.release_focus()
+	pivot_offset = Vector2(WIDTH * 0.5, 30)
+	UI.pop_out(self, 0.12, func(): _closing = false)
 	closed.emit()
 
 
@@ -278,7 +298,7 @@ func _on_server_line(line: String) -> void:
 	match String(d.get("op", "")):
 		"apps":
 			apps = d.get("items", [])
-			if visible: _rebuild()
+			if is_open(): _rebuild()
 		"files":
 			if String(d.get("q", "")) == input.text.strip_edges():
 				_files = d.get("items", [])
@@ -364,14 +384,14 @@ func _rebuild() -> void:
 	if quick:
 		var a: Dictionary = quick.answer(q)
 		if not a.is_empty():
-			out.append({"kind": "answer", "title": a.title, "subtitle": a.subtitle, "copy": a.copy, "score": 1000.0, "badge": "=", "color": Color("4c9a62")})
+			out.append({"kind": "answer", "title": a.title, "subtitle": a.subtitle, "copy": a.copy, "score": 1000.0, "badge": "calc", "color": T_ANSWER})
 	if not _time_answer.is_empty():
-		out.append({"kind": "answer", "title": _time_answer.title, "subtitle": _time_answer.subtitle, "copy": _time_answer.copy, "score": 999.0, "badge": "TIME", "color": Color("4c9a62")})
+		out.append({"kind": "answer", "title": _time_answer.title, "subtitle": _time_answer.subtitle, "copy": _time_answer.copy, "score": 999.0, "badge": "clock", "color": T_ANSWER})
 	var ranked: Array = []
 	for app in apps:
 		var s := score(String(app.name), q)
 		if s > 0:
-			ranked.append({"kind": "app", "title": app.name, "subtitle": "App", "id": app.id, "copy": app.name, "score": s + 15.0, "badge": "APP", "color": Color("3f6fb5")})
+			ranked.append({"kind": "app", "title": app.name, "subtitle": "App", "id": app.id, "copy": app.name, "score": s + 15.0, "badge": "app", "color": T_APP})
 	if rico_items.is_valid():
 		for it in rico_items.call():
 			var s := score(String(it.title), q, String(it.get("keywords", "")))
@@ -382,7 +402,7 @@ func _rebuild() -> void:
 		var s := score(name.get_basename() if not f.folder else name, q)
 		ranked.append({"kind": "folder" if f.folder else "file", "title": name, "subtitle": String(f.path).get_base_dir(), "path": f.path,
 			"copy": f.path, "size": f.size, "modified": f.modified, "score": maxf(s, 20.0),
-			"badge": "DIR" if f.folder else _ext_badge(name), "color": Color("8a6a3a") if f.folder else Color("6b5a8e")})
+			"badge": "folder" if f.folder else _ext_badge(name), "color": T_DIR if f.folder else T_FILE})
 	ranked.sort_custom(func(a, b): return a.score > b.score)
 	# keep a mix: at most 4 apps, 3 Rico actions, 5 files
 	var caps := {"app": 4, "rico": 3, "file": 5, "folder": 2}
@@ -393,18 +413,30 @@ func _rebuild() -> void:
 		if counts[k] <= caps.get(k, 3):
 			out.append(r)
 	out = out.slice(0, MAX_ROWS - 2)
-	out.append({"kind": "web", "title": "Search Google for \"%s\"" % q, "subtitle": "Opens your browser", "score": -1.0, "badge": "WEB", "color": Color("5b7f9a")})
-	out.append({"kind": "ask", "title": "Ask Rico: \"%s\"" % q, "subtitle": "Tab", "score": -2.0, "badge": "RICO", "color": ACCENT})
+	out.append({"kind": "web", "title": "Search Google for \"%s\"" % q, "subtitle": "Opens your browser", "score": -1.0, "badge": "web", "color": T_WEB})
+	out.append({"kind": "ask", "title": "Ask Rico: \"%s\"" % q, "subtitle": "Tab", "score": -2.0, "badge": "chat", "color": UI.COPPER_HI})
 	_show(out)
 
 
 func _rico_result(it: Dictionary, s: float) -> Dictionary:
-	return {"kind": "rico", "title": it.title, "subtitle": it.get("subtitle", "Rico"), "id": it.id, "copy": it.title, "score": s, "badge": "RICO", "color": ACCENT}
+	var id: String = it.id
+	var ic := "bolt"
+	if id.begins_with("set:"): ic = "settings"
+	elif id.begins_with("proj:"): ic = "rocket"
+	elif id.begins_with("pc:"): ic = "cpu"
+	elif id == "chat": ic = "chat"
+	return {"kind": "rico", "title": it.title, "subtitle": it.get("subtitle", "Rico"), "id": it.id, "copy": it.title, "score": s, "badge": ic, "color": UI.COPPER_HI}
 
 
 func _ext_badge(name: String) -> String:
-	var e := name.get_extension().to_upper()
-	return e.left(4) if e != "" else "FILE"
+	var e := name.get_extension().to_lower()
+	if e in IMAGE_EXT or e in ["psd", "kra", "clip", "ase", "aseprite", "gif", "heic"]: return "photo"
+	if e in ["blend", "fbx", "obj", "glb", "gltf", "stl", "3mf", "usd"]: return "cube"
+	if e in ["zip", "rar", "7z", "gz", "tar"]: return "zip"
+	if e in ["gd", "cs", "py", "js", "ts", "json", "cpp", "c", "h", "lua", "tscn", "tres", "godot", "html", "css"]: return "code"
+	if e in ["mp4", "mov", "mkv", "avi", "webm"]: return "movie"
+	if e in ["mp3", "wav", "ogg", "flac", "m4a"]: return "music"
+	return "file"
 
 
 func _show(list: Array) -> void:
@@ -422,13 +454,10 @@ func _show(list: Array) -> void:
 		p.visible = true
 		r.title.text = it.title
 		r.sub.text = it.subtitle
-		r.badge.text = it.badge
-		var bs := StyleBoxFlat.new()
-		bs.bg_color = it.color
-		bs.set_corner_radius_all(9)
-		r.badge.add_theme_stylebox_override("normal", bs)
+		r.badge.text = UI.icon(it.badge)
+		r.badge.set_meta("tint", it.color)
 		var hints := {"app": "Open", "file": "Open", "folder": "Open", "rico": "Do it", "answer": "Copy", "web": "Search", "ask": "Ask"}
-		r.hint.text = hints.get(it.kind, "")
+		r.hint.set_meta("txt", hints.get(it.kind, ""))
 	_style_rows()
 	_update_preview()
 	reset_size()
@@ -438,10 +467,14 @@ func _style_rows() -> void:
 	for i in rows.size():
 		var r: Dictionary = rows[i]
 		var sel := i == selected
-		r.panel.add_theme_stylebox_override("panel", _box(ACCENT if sel else Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 12, 6))
-		r.title.add_theme_color_override("font_color", Color.WHITE if sel else INK)
-		r.sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.8) if sel else Color(INK, 0.55))
-		r.hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.9) if sel else Color(INK, 0.35))
+		var tint: Color = r.badge.get_meta("tint", UI.COPPER)
+		r.panel.add_theme_stylebox_override("panel", UI.box(Color(UI.COPPER, 0.92) if sel else Color(0, 0, 0, 0), 12, Color(1, 1, 1, 0.18) if sel else Color(0, 0, 0, 0), 1 if sel else 0, 6))
+		r.badge.add_theme_stylebox_override("normal", UI.box(Color(1, 1, 1, 0.18) if sel else Color(tint, 0.16), 10, Color(0, 0, 0, 0), 0, 0))
+		r.badge.add_theme_color_override("font_color", Color.WHITE if sel else tint)
+		r.title.add_theme_color_override("font_color", Color.WHITE if sel else UI.TEXT)
+		r.sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.78) if sel else UI.TEXT_3)
+		r.hint.text = (r.hint.get_meta("txt", "") + "  " + UI.icon("chevron")) if sel else ""
+		r.hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.9))
 
 
 func _select(i: int) -> void:
