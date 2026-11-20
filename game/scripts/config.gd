@@ -23,6 +23,8 @@ var data := {
 	"start_with_windows": false,
 	"projects": [],            # [{name, path}]
 	"rico_x": -1.0,
+	"dodge": true,
+	"app_spots": {},           # exe name -> x position
 }
 
 

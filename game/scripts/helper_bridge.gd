@@ -3,6 +3,7 @@ extends Node
 
 signal hotkey(name: String)
 signal foreground_changed(title: String)
+signal focus_rect(rect: Rect2i, exe: String)   # rect size 0 = nothing to dodge
 
 var _pipe: FileAccess
 var _pid := -1
@@ -44,6 +45,13 @@ func _read_loop() -> void:
 func _handle(line: String) -> void:
 	if line.begins_with("HOTKEY "):
 		hotkey.emit(line.substr(7))
+	elif line.begins_with("FGRECT "):
+		var parts := line.substr(7).split(" ", true, 4)
+		if parts.size() < 5:
+			focus_rect.emit(Rect2i(), "")
+		else:
+			var l := int(parts[0]); var t := int(parts[1])
+			focus_rect.emit(Rect2i(l, t, int(parts[2]) - l, int(parts[3]) - t), parts[4].to_lower())
 	elif line.begins_with("FG "):
 		foreground_changed.emit(line.substr(3))
 

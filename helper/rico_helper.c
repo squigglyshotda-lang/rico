@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <dwmapi.h>
 
 static DWORD g_parent_pid = 0;
 static HANDLE g_parent = NULL;
@@ -43,12 +44,45 @@ static BOOL CALLBACK hide_from_taskbar(HWND hwnd, LPARAM lp) {
     return TRUE;
 }
 
+static HWND g_last_fg = NULL;
+static RECT g_last_rect = {0, 0, 0, 0};
+
+// FGRECT <l> <t> <r> <b> <exe>   (or FGRECT none) for the window Rico should dodge
+static void report_rect(HWND fg, DWORD pid) {
+    char line[700];
+    wchar_t cls[64] = L"";
+    GetClassNameW(fg, cls, 64);
+    if (IsIconic(fg) || !wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW") || !wcscmp(cls, L"Shell_TrayWnd")) {
+        if (g_last_fg != NULL) { printf("FGRECT none\n"); fflush(stdout); }
+        g_last_fg = NULL;
+        return;
+    }
+    RECT r;
+    if (FAILED(DwmGetWindowAttribute(fg, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r)))) GetWindowRect(fg, &r);
+    if (fg == g_last_fg && !memcmp(&r, &g_last_rect, sizeof(r))) return;
+    g_last_fg = fg;
+    g_last_rect = r;
+    wchar_t exe[MAX_PATH] = L"unknown";
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (h) {
+        DWORD n = MAX_PATH;
+        if (QueryFullProcessImageNameW(h, 0, exe, &n)) {
+            wchar_t *slash = wcsrchr(exe, L'\\');
+            if (slash) memmove(exe, slash + 1, (wcslen(slash + 1) + 1) * sizeof(wchar_t));
+        }
+        CloseHandle(h);
+    }
+    snprintf(line, sizeof(line), "FGRECT %ld %ld %ld %ld ", r.left, r.top, r.right, r.bottom);
+    emit_utf8(line, exe);
+}
+
 static void report_foreground(void) {
     HWND fg = GetForegroundWindow();
     if (!fg) return;
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
     if (pid == g_parent_pid) return;
+    report_rect(fg, pid);
     wchar_t title[512];
     if (GetWindowTextW(fg, title, 512) <= 0) return;
     if (wcscmp(title, g_last_title) == 0) return;
@@ -59,6 +93,10 @@ static void report_foreground(void) {
 int main(int argc, char **argv) {
     if (argc > 1) g_parent_pid = (DWORD)strtoul(argv[1], NULL, 10);
     if (g_parent_pid) g_parent = OpenProcess(SYNCHRONIZE, FALSE, g_parent_pid);
+    // Match Godot's per-monitor DPI awareness so window rects are in real pixels.
+    typedef BOOL (WINAPI *SetCtx)(HANDLE);
+    SetCtx set_ctx = (SetCtx)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
+    if (set_ctx) set_ctx((HANDLE)-4); else SetProcessDPIAware();
 
     struct { int id; UINT mods; UINT vk; const char *name; } keys[] = {
         {1, MOD_CONTROL | MOD_SHIFT, VK_SPACE, "chat"},
@@ -73,7 +111,7 @@ int main(int argc, char **argv) {
     printf("READY\n");
     fflush(stdout);
 
-    SetTimer(NULL, 0, 1000, NULL);
+    SetTimer(NULL, 0, 400, NULL);
     int ticks = 0;
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
@@ -90,7 +128,7 @@ int main(int argc, char **argv) {
         } else if (msg.message == WM_TIMER) {
             ++ticks;
             if (g_parent && WaitForSingleObject(g_parent, 0) == WAIT_OBJECT_0) break;
-            if (ticks <= 10 || ticks % 5 == 0) EnumWindows(hide_from_taskbar, 0);
+            if (ticks <= 25 || ticks % 12 == 0) EnumWindows(hide_from_taskbar, 0);
             report_foreground();
         }
         DispatchMessageW(&msg);

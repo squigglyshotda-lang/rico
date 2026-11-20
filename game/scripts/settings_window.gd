@@ -386,6 +386,12 @@ func _build_rico() -> void:
 	_option(v, "Size", "size", ["Small", "Medium", "Large"])
 	_option(v, "Chattiness", "chattiness", ["Quiet", "Normal", "Chatty"])
 	_check(v, "Wander around the bottom of the screen", "wander")
+	_check(v, "Hop out of the way of the window I'm using", "dodge")
+	_label(v, "Drag Rico somewhere while an app is in front and he'll go back to that spot whenever you use that app.", true)
+	var forget := Button.new()
+	forget.text = "Forget all saved app spots"
+	forget.pressed.connect(func(): Cfg.s("app_spots", {}))
+	v.add_child(forget)
 	_check(v, "Tips for the app I'm using (Godot, Blender, VS Code, Figma, art apps)", "app_tips")
 	_slider(v, "Sound volume", "volume", 0.0, 1.0)
 	_heading(v, "Startup")

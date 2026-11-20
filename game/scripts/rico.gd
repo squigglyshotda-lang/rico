@@ -30,6 +30,9 @@ var spin := 0.0
 var hopping_to := -1.0
 var hop_cooldown := 0.0
 var wander_timer := 6.0
+var hop_far := false
+var home_x := -1.0              # saved spot for the current app (-1 = none)
+var spot_ok: Callable           # func(x) -> bool, false where a focused window is
 
 # Expression / animation
 var mood := "smug"
@@ -111,8 +114,12 @@ func fling(v: Vector2) -> void:
 	state = State.FLY
 
 
-func hop_to(x: float) -> void:
+func hop_to(x: float, far := false) -> void:
+	if state == State.SLEEP and far:
+		state = State.IDLE
+		mood = "smug"
 	if state in [State.IDLE, State.HOP]:
+		hop_far = far
 		hopping_to = clampf(x, bounds.position.x + half_extents().x, bounds.end.x - half_extents().x)
 		state = State.HOP
 		hop_cooldown = 0.15
@@ -153,16 +160,24 @@ func _process(delta: float) -> void:
 				if wander_timer <= 0:
 					wander_timer = randf_range(14, 45)
 					var span := randf_range(80, 320) * (1 if randf() > 0.5 else -1)
-					hop_to(position.x + span)
+					var target := position.x + span
+					if home_x >= 0:
+						target = home_x + randf_range(-110, 110)
+					if spot_ok.is_valid() and not spot_ok.call(target):
+						target = position.x - span
+					if not spot_ok.is_valid() or spot_ok.call(target):
+						hop_to(target)
 		State.HOP:
 			rotation = lerp_angle(rotation, 0.0, 0.2)
 			hop_cooldown -= delta
 			if absf(position.x - hopping_to) < 12:
 				state = State.IDLE
+				hop_far = false
 			elif hop_cooldown <= 0 and on_floor():
 				var dir := signf(hopping_to - position.x)
-				var dist := minf(absf(hopping_to - position.x), 70.0 * scale.x)
-				vel = Vector2(dir * dist * 2.6, -430 * sqrt(scale.x))
+				var dist := minf(absf(hopping_to - position.x), (260.0 if hop_far else 70.0) * scale.x)
+				var vy := 430.0 * sqrt(scale.x) + dist * 0.6
+				vel = Vector2(dir * dist / (2.0 * vy / GRAVITY), -vy)
 				sq = 1.12
 				_integrate(delta, true)
 			else:

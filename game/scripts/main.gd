@@ -45,6 +45,10 @@ var _current_reminder := {}
 var _blip_acc := 0.0
 var _joy_prev := {}
 var _pong_count := 0
+var _fg_exe := ""
+var _fg_rect := Rect2()          # focused window in our window coords (size 0 = none)
+var _dodge_check := -1.0
+var _user_placed := false
 
 
 func _ready() -> void:
@@ -79,6 +83,8 @@ func _ready() -> void:
 
 	helper.hotkey.connect(_on_hotkey)
 	helper.foreground_changed.connect(_on_foreground)
+	helper.focus_rect.connect(_on_focus_rect)
+	rico.spot_ok = func(x): return not _covered(x)
 	ai.reply.connect(_on_ai_reply)
 	ai.failed.connect(_on_ai_failed)
 	ai.tool_handler = _run_tool
@@ -104,12 +110,44 @@ func _ready() -> void:
 	_build_tray()
 	_quip_timer = _next_quip_delay()
 	_update_region(true)
+	if OS.has_environment("RICO_DODGE_TEST"):
+		_run_dodge_test.call_deferred()
+		return
 	if OS.has_environment("RICO_SHOT"):
 		_run_shot_test.call_deferred()
 		return
 	get_tree().create_timer(0.9).timeout.connect(func():
 		rico.waving = 2.0
 		_say(Lines.pick(Lines.GREET), 6))
+
+
+func _run_dodge_test() -> void:
+	var tree := get_tree()
+	Cfg.data.wander = false
+	Cfg.data.volume = 0.0
+	Cfg.data.app_spots = {}
+	rico.position.x = 1500
+	var wp := get_window().position
+	print("area ", area, " start x ", rico.position.x)
+	_on_focus_rect(Rect2i(wp.x + 900, wp.y + 100, 1000, int(area.size.y)), "blender.exe")
+	await tree.create_timer(6.0).timeout
+	print("blender covering right: x=", rico.position.x, " covered=", _covered(rico.position.x))
+	_on_focus_rect(Rect2i(wp.x, wp.y, int(area.size.x), int(area.size.y)), "godot.exe")
+	await tree.create_timer(6.0).timeout
+	print("godot maximised: x=", rico.position.x)
+	rico.start_drag(rico.position); _user_placed = true; rico.position.x = 700; rico.release_drag()
+	await tree.create_timer(3.0).timeout
+	print("dropped in godot at x=", rico.position.x, " spots=", Cfg.g("app_spots"))
+	_on_focus_rect(Rect2i(wp.x + 900, wp.y + 100, 1000, int(area.size.y)), "blender.exe")
+	await tree.create_timer(6.0).timeout
+	print("back to blender: x=", rico.position.x)
+	_on_focus_rect(Rect2i(wp.x, wp.y, int(area.size.x), int(area.size.y)), "godot.exe")
+	await tree.create_timer(6.0).timeout
+	print("back to godot (saved spot): x=", rico.position.x)
+	_on_focus_rect(Rect2i(wp.x + 200, wp.y + 100, 600, 400), "notepad.exe")
+	await tree.create_timer(3.0).timeout
+	print("small window up top: x=", rico.position.x)
+	tree.quit()
 
 
 ## Dev-only: render scenarios to PNG for checking the art (RICO_SHOT=<folder>).
@@ -189,6 +227,7 @@ func _build_menu() -> void:
 	menu.add_separator()
 	menu.add_item("Settings...", 3)
 	menu.add_item("New conversation", 4)
+	menu.add_item("Forget my spot for this app", 7)
 	menu.add_item("Take a nap", 5)
 	menu.add_item("Hide for 30 minutes", 6)
 	menu.add_separator()
@@ -225,6 +264,14 @@ func _on_menu(id: int) -> void:
 			_say("Fresh start. I've already forgotten everything. Bliss.", 4)
 		5: rico.sleep()
 		6: _hide_for(30 * 60)
+		7:
+			var spots: Dictionary = Cfg.g("app_spots", {}).duplicate()
+			if spots.erase(_fg_exe):
+				Cfg.s("app_spots", spots)
+				rico.home_x = -1.0
+				_say("Forgotten. I'll freestyle in %s from now on." % _app_label(_fg_exe), 4)
+			else:
+				_say("I didn't have a spot saved for this app anyway.", 4)
 		9: _quit()
 
 
@@ -555,6 +602,70 @@ func _on_foreground(title: String) -> void:
 		_kind_time = 0.0
 
 
+# ------------------------------------------------------------------ dodging + per-app spots
+
+func _app_label(exe: String) -> String:
+	return exe.get_basename().capitalize() if exe != "" else "this app"
+
+
+func _on_focus_rect(r: Rect2i, exe: String) -> void:
+	if r.size.x <= 0:
+		_fg_rect = Rect2()
+		exe = "desktop"
+	else:
+		_fg_rect = Rect2(Vector2(r.position - get_window().position), Vector2(r.size))
+	if exe != "" and exe != _fg_exe:
+		_fg_exe = exe
+		var spots: Dictionary = Cfg.g("app_spots", {})
+		rico.home_x = float(spots[exe]) if spots.has(exe) else -1.0
+		_dodge_check = 0.15
+	else:
+		_dodge_check = 0.5   # window moved or resized: settle, then check
+
+
+## True if Rico standing at x would be on top of the focused window.
+func _covered(x: float) -> bool:
+	if not Cfg.g("dodge", true) or _fg_rect.size.x <= 0:
+		return false
+	var h: Vector2 = rico.half_extents()
+	if _fg_rect.end.y < area.end.y - h.y * 1.2 or _fg_rect.position.y > area.end.y:
+		return false   # window doesn't reach down to where Rico stands
+	return x + h.x > _fg_rect.position.x and x - h.x < _fg_rect.end.x
+
+
+func _free_x() -> float:
+	var h: Vector2 = rico.half_extents()
+	var pad := h.x + 10.0
+	var x: float = rico.position.x
+	var best := INF
+	var best_x := -1.0
+	for gap in [Vector2(area.position.x + pad, _fg_rect.position.x - pad), Vector2(_fg_rect.end.x + pad, area.end.x - pad)]:
+		if gap.y < gap.x:
+			continue
+		var cand := clampf(x, gap.x, gap.y)
+		if absf(cand - x) < best:
+			best = absf(cand - x)
+			best_x = cand
+	if best_x < 0:
+		# no free space (maximised window): go to the nearer bottom corner
+		best_x = area.end.x - pad if x > area.get_center().x else area.position.x + pad
+	return best_x
+
+
+func _apply_placement() -> void:
+	if rico.state in [RicoScript.State.DRAG, RicoScript.State.FLY] or _pressing:
+		_dodge_check = 0.5
+		return
+	if rico.home_x >= 0:
+		if absf(rico.position.x - rico.home_x) > 14:
+			rico.hop_to(rico.home_x, true)
+		return
+	if _covered(rico.position.x):
+		var target := _free_x()
+		if absf(target - rico.position.x) > 14:
+			rico.hop_to(target, true)
+
+
 # ------------------------------------------------------------------ physics fx
 
 func _on_impact(pos: Vector2, speed: float, normal: Vector2) -> void:
@@ -577,6 +688,16 @@ func _on_landed() -> void:
 		rico.set_mood("smug", 1.0)
 	_pong_count = 0
 	Cfg.data.rico_x = rico.position.x
+	if _user_placed:
+		_user_placed = false
+		if _fg_exe != "":
+			var spots: Dictionary = Cfg.g("app_spots", {}).duplicate()
+			var first := not spots.has(_fg_exe)
+			spots[_fg_exe] = rico.position.x
+			Cfg.s("app_spots", spots)
+			rico.home_x = rico.position.x
+			if first:
+				_say("Noted. This is my %s spot now." % _app_label(_fg_exe), 4)
 
 
 func _draw_fx() -> void:
@@ -649,6 +770,10 @@ func _process(delta: float) -> void:
 		_say(_next_tip(_fg_kind), 9)
 
 	_poll_controller()
+	if _dodge_check > 0:
+		_dodge_check -= delta
+		if _dodge_check <= 0:
+			_apply_placement()
 
 	# sparks
 	for s in sparks:
@@ -704,6 +829,7 @@ func _input(event: InputEvent) -> void:
 		_pressing = false
 		if rico.state == RicoScript.State.DRAG:
 			rico.release_drag()
+			_user_placed = true
 		elif _press_button == MOUSE_BUTTON_LEFT and rico.hit_test(event.position):
 			_on_rico_clicked()
 
