@@ -11,6 +11,10 @@ const VoiceScript := preload("res://scripts/voice.gd")
 const RemindersScript := preload("res://scripts/reminders.gd")
 const SettingsScript := preload("res://scripts/settings_window.gd")
 const PcScript := preload("res://scripts/pc.gd")
+const MemScript := preload("res://scripts/memory.gd")
+const BrainScript := preload("res://scripts/brain.gd")
+const QuickScript := preload("res://scripts/quick.gd")
+const SearchScript := preload("res://scripts/search.gd")
 
 signal _approval_answered(result: Dictionary)
 
@@ -23,6 +27,12 @@ var voice
 var reminders
 var settings
 var pc
+var mem
+var brain
+var quick
+var search
+var _pre_search_x := -1.0
+var _voice_for_search := false
 var pc_menu: PopupMenu
 var _approval_pending := false
 var _report_timer := 30.0
@@ -76,6 +86,23 @@ func _ready() -> void:
 	reminders = RemindersScript.new(); add_child(reminders)
 	pc = PcScript.new(); add_child(pc)
 	pc.approve = _request_approval
+	mem = MemScript.new(); add_child(mem)
+	ai.mem = mem
+	quick = QuickScript.new(); add_child(quick)
+	if quick.rates.has("USD") and quick.rates.has("GBP"):
+		mem.usd_to_gbp = float(quick.rates.GBP) / float(quick.rates.USD)
+	brain = BrainScript.new(); add_child(brain)
+	brain.reply.connect(_on_brain_reply)
+	brain.failed.connect(_on_brain_failed)
+	brain.download_progress.connect(func(p): settings.set_brain_status("Downloading... %d%%" % p))
+	brain.download_done.connect(_on_brain_downloaded)
+	search = SearchScript.new()
+	search.quick = quick
+	search.rico_items = _search_rico_items
+	add_child(search)
+	search.closed.connect(_on_search_closed)
+	search.ask_rico.connect(_on_search_ask)
+	search.rico_action.connect(_on_search_action)
 
 	rico.scale = Vector2.ONE * Cfg.size_scale()
 	rico.bounds = area
@@ -91,6 +118,9 @@ func _ready() -> void:
 	bubble.closed.connect(_on_bubble_closed)
 
 	helper.hotkey.connect(_on_hotkey)
+	helper.hotkey_failed.connect(func(n):
+		if n == "search":
+			get_tree().create_timer(8.0).timeout.connect(func(): _say("Alt+Space is already taken by another app (PowerToys Run?), so my search bar is on the right-click menu and Ctrl+Shift+Space chat instead.", 9)))
 	helper.foreground_changed.connect(_on_foreground)
 	helper.focus_rect.connect(_on_focus_rect)
 	rico.spot_ok = func(x): return not _covered(x)
@@ -109,9 +139,12 @@ func _ready() -> void:
 	settings.reminders = reminders
 	settings.voice = voice
 	settings.pc = pc
+	settings.mem = mem
+	settings.brain = brain
 	add_child(settings)
 	settings.build()
 	settings.test_requested.connect(_test_api)
+	settings.brain_download_requested.connect(_start_brain_download)
 	reminders.list_changed.connect(settings.refresh_reminders)
 	settings.refresh_reminders()
 	Cfg.changed.connect(_on_cfg_changed)
@@ -122,6 +155,15 @@ func _ready() -> void:
 	_update_region(true)
 	if OS.has_environment("RICO_DODGE_TEST"):
 		_run_dodge_test.call_deferred()
+		return
+	if OS.has_environment("RICO_ROUTER_TEST"):
+		for q in ["why is my pc so slow", "tidy my downloads", "tell me a joke", "how do I make a one-way platform in godot", "think hard about my game's economy", "install obs for me", "what's your favourite colour", "hello", "remind me in 10 minutes to stretch", "remember that I use Blender 4.2", "open blender", "50 usd in gbp", "game mode on"]:
+			var l: String = await _local_command(q)
+			print(q, " | local=", "HANDLED" if l == HANDLED else l.left(40), " | groups=", ai.groups_for(q), " hard=", ai.is_hard(q), " claude=", ai.needs_tools(q) or ai.is_hard(q) or _wants_claude(q))
+		get_tree().quit()
+		return
+	if OS.has_environment("RICO_SHOT_SEARCH"):
+		_run_search_shot.call_deferred()
 		return
 	if OS.has_environment("RICO_SHOT"):
 		_run_shot_test.call_deferred()
@@ -158,6 +200,36 @@ func _run_dodge_test() -> void:
 	await tree.create_timer(3.0).timeout
 	print("small window up top: x=", rico.position.x)
 	tree.quit()
+
+
+func _run_search_shot() -> void:
+	var out := OS.get_environment("RICO_SHOT_SEARCH")
+	Cfg.data.volume = 0.0
+	Cfg.data.projects = [{"name": "Zuri", "path": "C:/Games/Zuri/project.godot"}]
+	quick.rates = {"EUR": 1.0, "GBP": 0.85, "USD": 1.08}
+	quick.rates_date = Time.get_date_string_from_system()
+	search.apps = [{"name": "Blender 4.2", "id": "x"}, {"name": "Blender 3.6", "id": "y"}, {"name": "Godot Engine", "id": "z"}, {"name": "Bluetooth settings", "id": "w"}]
+	var icon := ProjectSettings.globalize_path("res://assets/icon.png")
+	rico.position.x = 400
+	await _open_search("")
+	await get_tree().create_timer(1.0).timeout
+	get_viewport().get_texture().get_image().save_png(out.path_join("s_empty.png"))
+	search.set_query("ble")
+	search._files = [{"name": "bullet_hero.blend", "path": "C:/Users/Pierre/Art/bullet_hero.blend", "size": 48234567.0, "modified": "2026-11-19 22:10", "folder": false},
+		{"name": "blend_concepts.png", "path": icon, "size": 120345.0, "modified": "2026-11-18 09:02", "folder": false}]
+	search._rebuild()
+	search.move(4)
+	await get_tree().create_timer(0.8).timeout
+	get_viewport().get_texture().get_image().save_png(out.path_join("s_files.png"))
+	search.set_query("50 usd in gbp")
+	await get_tree().create_timer(0.8).timeout
+	get_viewport().get_texture().get_image().save_png(out.path_join("s_answer.png"))
+	search.close()
+	await get_tree().create_timer(1.5).timeout
+	_reply("Haiku answer goes here, short and smug.", "Haiku · 0.02p")
+	await get_tree().create_timer(1.5).timeout
+	get_viewport().get_texture().get_image().save_png(out.path_join("s_cost.png"))
+	get_tree().quit()
 
 
 ## Dev-only: render scenarios to PNG for checking the art (RICO_SHOT=<folder>).
@@ -234,6 +306,7 @@ func _build_menu() -> void:
 		var list: Array = Cfg.g("projects")
 		if id < list.size():
 			_open_project(list[id]))
+	menu.add_item("Search (Alt+Space)", 8)
 	menu.add_item("Chat with Rico", 0)
 	menu.add_item("Talk (voice)", 1)
 	menu.add_separator()
@@ -314,6 +387,7 @@ func _on_menu(id: int) -> void:
 				_say("Forgotten. I'll freestyle in %s from now on." % _app_label(_fg_exe), 4)
 			else:
 				_say("I didn't have a spot saved for this app anyway.", 4)
+		8: _open_search()
 		9: _quit()
 
 
@@ -404,31 +478,134 @@ func _on_submitted(text: String) -> void:
 	_handle_request(text)
 
 
+const HANDLED := "\u0001"
+
+
+## The token-saving router: local command -> answer cache -> offline brain or Claude.
 func _handle_request(text: String) -> void:
 	voice.stop_speaking()
-	if not ai.has_key():
-		var local := _local_command(text)
-		_say(local if local != "" else Lines.NO_KEY, -1, true)
+	if ai.busy or brain.busy:
 		return
-	if ai.busy:
+	# 1. things Rico can just do (free)
+	var local: String = await _local_command(text)
+	if local == HANDLED:
+		mem.count("local")
 		return
-	rico.thinking = true
-	_say("...", -1, true)
-	ai.ask(text)
+	if local != "":
+		mem.count("local")
+		ai.note_exchange(text, local)
+		_reply(local, "Done locally · free")
+		return
+	# 2. asked before? (free)
+	var cached: String = mem.cache_get(text)
+	if cached != "":
+		mem.count("cache")
+		ai.note_exchange(text, cached)
+		_reply(cached, "From memory · free")
+		return
+	# 3. pick a brain
+	var capped: bool = float(Cfg.g("daily_cap_gbp", 0.0)) > 0.0 and mem.today_gbp() >= float(Cfg.g("daily_cap_gbp", 0.0))
+	var claude_ok: bool = ai.has_key() and not capped
+	var wants_claude: bool = ai.needs_tools(text) or ai.is_hard(text) or _wants_claude(text)
+	if claude_ok and (wants_claude or not brain.enabled()):
+		rico.thinking = true
+		_say("...", -1, true)
+		ai.ask(text)
+		if not brain.installed() and not brain.downloading and not Cfg.g("brain_offered", false) and not wants_claude:
+			Cfg.s("brain_offered", true)
+			_offer_brain_later = true
+		return
+	if brain.enabled():
+		rico.thinking = true
+		_say("...", -1, true)
+		_brain_question = text
+		brain.chat(_brain_messages(text))
+		return
+	if capped:
+		_say("I've hit today's Claude budget (%s). Raise it in Settings > Usage, or get my offline brain there." % MemScript.fmt_gbp(float(Cfg.g("daily_cap_gbp"))), -1, true)
+	elif brain.downloading:
+		_say("Still downloading my offline brain (%d%%). Give me a minute." % brain.download_percent(), -1, true)
+	else:
+		_say(Lines.NO_KEY, -1, true)
 
 
-func _on_ai_reply(text: String) -> void:
+var _offer_brain_later := false
+var _brain_question := ""
+
+
+## Questions the small offline model would likely fumble.
+func _wants_claude(text: String) -> bool:
+	var t := text.to_lower()
+	if text.length() > 140:
+		return true
+	for k in ["godot", "blender", "unity", "unreal", "code", "script", "how do i", "how to", "how can i", "why ", "explain", "write ", "draft", "email", "plan ", "recommend", "design", "error", "bug", "fix", "help me", "steps", "tutorial", "translate", "summar", "difference between", "what's the best", "which is better", "?"]:
+		if k in t and not (k == "?" and text.length() < 40):
+			return true
+	return false
+
+
+func _brain_messages(text: String) -> Array:
+	var sys := "You are Rico, a cheeky, sarcastic but kind cartoon living bullet who lives on the user's Windows desktop. The user is Pierre, an indie game developer and artist. Reply in 1-2 short sentences, plain text, no emoji, no lists."
+	var facts: Array = mem.relevant(text, 4)
+	if not facts.is_empty():
+		sys += " Things you know: " + "; ".join(facts) + "."
+	var msgs := [{"role": "system", "content": sys}]
+	for h in ai.history.slice(-4):
+		msgs.append({"role": h.role, "content": String(h.content)})
+	msgs.append({"role": "user", "content": text})
+	return msgs
+
+
+func _on_brain_reply(text: String) -> void:
+	rico.thinking = false
+	mem.count("mini")
+	ai.note_exchange(_brain_question, text)
+	mem.cache_put(_brain_question, text, "mini")
+	_reply(text, "Offline brain · free")
+
+
+func _on_brain_failed(msg: String) -> void:
+	rico.thinking = false
+	if ai.has_key() and _brain_question != "":
+		_say("...", -1, true)
+		ai.ask(_brain_question)   # fall back to Claude
+		return
+	_say("Ugh. " + msg, -1, true)
+
+
+func _reply(text: String, meta := "") -> void:
 	rico.thinking = false
 	_say(text, -1, true)
+	bubble.set_meta_text(meta)
 	var mode := int(Cfg.g("speak_replies", 1))
 	if mode == 2 or (mode == 1 and _last_was_voice):
 		voice.speak(text)
 
 
-func _on_ai_failed(msg: String) -> void:
+func _on_ai_reply(text: String, meta: Dictionary) -> void:
+	var name := "Sonnet" if "sonnet" in String(meta.get("model", "")) else "Haiku"
+	if not meta.get("tools", false):
+		mem.cache_put(ai._question, text, name)
+	_reply(text, "%s · %s" % [name, MemScript.fmt_gbp(float(meta.get("cost", 0.0)))])
+	if _offer_brain_later:
+		_offer_brain_later = false
+		await get_tree().create_timer(6.0).timeout
+		if not bubble.is_busy_with_user():
+			_say("Psst: small talk like that could be free. Want my offline brain? It's a one-off 2 GB download and runs on your PC.", -1, false, [["brain_dl", "Download"], ["dismiss", "Not now"]])
+
+
+func _on_ai_failed(msg: String, details: String) -> void:
 	rico.thinking = false
 	rico.set_mood("annoyed", 3)
-	_say("Ugh. " + msg, -1, true)
+	if brain.enabled() and ai._question != "" and not "key" in msg:
+		_brain_question = ai._question
+		brain.chat(_brain_messages(ai._question))
+		return
+	var keep: bool = bubble.chat_mode
+	bubble.say("Ugh. " + msg, -1, [["details", "Show details"]], details)
+	bubble.chat_mode = keep
+	bubble.input_row.visible = keep
+	sfx.play("pop")
 	settings.set_status(msg)
 
 
@@ -437,9 +614,18 @@ func _test_api() -> void:
 		settings.set_status("Paste a key first.")
 		return
 	settings.set_status("Testing...")
-	var once := func(t): settings.set_status("Works! Rico says: " + t)
+	var once := func(t, _m): settings.set_status("Works! Rico says: " + t)
 	ai.reply.connect(once, CONNECT_ONE_SHOT)
-	_handle_request("Say a one-line hello to prove you're connected.")
+	_say("...", -1, true)
+	ai.ask("Say a one-line hello to prove you're connected.")
+
+
+func _start_brain_download() -> void:
+	if not FileAccess.file_exists(brain.server_path()):
+		_say("My offline brain files are missing from the Rico folder (brain\\). Re-unzip Rico.", 6)
+		return
+	brain.download()
+	_say("Downloading my offline brain (2 GB). I'll keep chatting through Claude meanwhile.", 6)
 
 
 const PC_TOOLS := ["get_top_processes", "scan_junk", "list_startup_apps", "list_power_plans", "system_health", "find_files",
@@ -453,6 +639,11 @@ func _run_tool(name: String, input: Dictionary) -> String:
 			return "PC tools are switched off (Settings > PC) or this isn't Windows."
 		return await _run_pc_tool(name, input)
 	match name:
+		"remember_fact":
+			mem.add_fact(String(input.get("fact", "")))
+			return "Saved to local memory."
+		"forget_fact":
+			return "Removed %d facts." % mem.forget(String(input.get("about", "")))
 		"set_reminder":
 			var text := String(input.get("text", "Reminder"))
 			var rep := float(input.get("repeat_minutes", 0))
@@ -548,40 +739,146 @@ func _open_project(p: Dictionary) -> void:
 		_say("Opening %s. Try not to break anything." % p.name, 4)
 
 
-## Simple offline commands for when there's no API key.
+func _cap1(t: String) -> String:
+	return t.left(1).to_upper() + t.substr(1) if t != "" else t
+
+
+## Everyday requests handled entirely offline (no AI). Returns "" if not recognised,
+## a reply to show, or HANDLED when a flow already drove the bubble.
 func _local_command(text: String) -> String:
-	var t := text.to_lower().strip_edges()
+	var t := text.to_lower().strip_edges().trim_suffix(".").trim_suffix("!").trim_suffix("?").strip_edges()
 	var re := RegEx.new()
+	# greetings and thanks
+	if t in ["hi", "hello", "hey", "hiya", "yo", "morning", "good morning", "evening", "sup", "alright", "you there"]:
+		return Lines.pick(["Hello. What do you want?", "Hi. I was busy doing nothing. What's up?", "Yo. Rico at your service, grudgingly."])
+	if t in ["thanks", "thank you", "cheers", "ta", "nice", "great", "cool", "ok", "okay", "lol", "haha", "nice one"]:
+		return Lines.pick(["You're welcome. Obviously.", "Any time. Well, most times.", "I know, I'm brilliant."])
+	# timers + reminders
 	re.compile("(\\d+(?:\\.\\d+)?)\\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\\b(?:\\s*(?:to|about|that)\\s+(.+))?")
 	if "remind" in t or "timer" in t:
-		var at := RegEx.new()
-		at.compile("(?:at\\s+)?(\\d{1,2}):(\\d{2})(?:\\s*(?:to|about)\\s+(.+))?")
 		var m := re.search(t)
 		if m:
 			var n := float(m.get_string(1))
 			var unit := m.get_string(2)
 			var mins := n / 60.0 if unit.begins_with("s") else (n * 60.0 if unit.begins_with("h") else n)
-			var what := m.get_string(3).strip_edges()
-			if what == "":
-				what = "Time's up."
-			var r: Dictionary = reminders.add(what.capitalize() if what != "Time's up." else what, mins)
+			var what := _cap1(m.get_string(3).strip_edges())
+			var r: Dictionary = reminders.add(what if what != "" else "Time's up.", mins)
 			return "Done. " + reminders.describe(r)
-		var a := at.search(t)
+		var at := RegEx.new()
+		at.compile("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?(?:\\s*(?:to|about)\\s+(.+))?")
+		var a := at.search(t.substr(t.find(" at ")) if " at " in t else "")
 		if a:
-			var what2 := a.get_string(3).strip_edges()
-			var r2: Dictionary = reminders.add_at(what2.capitalize() if what2 != "" else "Reminder", "%s:%s" % [a.get_string(1), a.get_string(2)])
+			var h := int(a.get_string(1))
+			if a.get_string(3) == "pm" and h < 12: h += 12
+			if a.get_string(3) == "am" and h == 12: h = 0
+			var r2: Dictionary = reminders.add_at(_cap1(a.get_string(4).strip_edges()) if a.get_string(4) != "" else "Reminder", "%d:%s" % [h, a.get_string(2) if a.get_string(2) != "" else "00"])
 			return "Done. " + reminders.describe(r2)
-	if t.begins_with("open ") or t.begins_with("launch "):
-		var p := _find_project(t.split(" ", true, 1)[1])
-		if not p.is_empty():
-			_open_project(p)
-			return "Opening %s." % p.name
-		return "I don't have a project called that. Add it in Settings, Projects."
-	if "reminders" in t:
+	if t in ["reminders", "my reminders", "list reminders", "what reminders do i have", "what reminders have i got", "show reminders"]:
 		var out := []
 		for r in reminders.pending():
 			out.append(reminders.describe(r))
 		return "Nothing pending. Living dangerously." if out.is_empty() else "\n".join(out)
+	# memory
+	re.compile("^(?:please )?remember (?:that )?(.+)$")
+	var mm := re.search(t)
+	if mm:
+		mem.add_fact(_cap1(text.strip_edges().substr(text.to_lower().find(mm.get_string(1)))))
+		return Lines.pick(["Noted. Filed under 'things Pierre thinks are important'.", "Got it. Stored locally, no cloud nonsense.", "Remembered. Unlike your last save."])
+	re.compile("^forget (?:about |that )?(.+)$")
+	mm = re.search(t)
+	if mm:
+		var n2: int = mem.forget(mm.get_string(1))
+		return "Forgotten (%d note%s). Blissful ignorance." % [n2, "" if n2 == 1 else "s"] if n2 > 0 else "I didn't have anything about that anyway."
+	if t in ["what do you know about me", "what do you remember", "what have you remembered", "show memory", "your memory"]:
+		if mem.facts.is_empty():
+			return "Nothing yet. Tell me things with \"remember that...\"."
+		return "Here's what I've got:\n" + "\n".join(mem.facts.map(func(f): return String(f.t)).slice(-8))
+	# quick answers (maths, units, currency)
+	var qa: Dictionary = quick.answer(text)
+	if not qa.is_empty() and String(qa.copy) != "":
+		return String(qa.title).trim_prefix("= ")
+	# search
+	re.compile("^(?:search|find|look for|spotlight)(?: for)? (.+)$")
+	mm = re.search(t)
+	if mm and not ai.needs_tools(t):
+		_open_search(mm.get_string(1))
+		return HANDLED
+	# open projects or apps
+	re.compile("^(?:open|launch|start|run) (.+)$")
+	mm = re.search(t)
+	if mm and not " routine" in t and not "mode" in t:
+		var what3 := mm.get_string(1).trim_prefix("up ").trim_prefix("my ")
+		var p := _find_project(what3)
+		if not p.is_empty():
+			_open_project(p)
+			return HANDLED
+		var best := {}
+		var best_s := 0.0
+		for app in search.apps:
+			var sc: float = search.score(String(app.name), what3)
+			if sc > best_s:
+				best_s = sc
+				best = app
+		if best_s >= 75.0:
+			OS.create_process("explorer.exe", ["shell:AppsFolder\\" + String(best.id)])
+			return "Opening %s." % best.name
+	# routines
+	re.compile("^(?:run|start|do)(?: the| my)? (.+?)(?: routine)?$")
+	mm = re.search(t)
+	if mm and pc.enabled():
+		for r in Cfg.g("routines", []):
+			if String(r.name).to_lower() == mm.get_string(1).strip_edges():
+				_pc_busy_say("Running %s..." % r.name)
+				_say(await pc.run_routine(String(r.name), true), 6)
+				return HANDLED
+	# PC actions with fixed flows
+	if pc.enabled():
+		if t in ["game mode on", "render mode on", "performance mode on", "game mode", "render mode", "turn on game mode", "turn on render mode", "start game mode", "start render mode"]:
+			if Cfg.g("perf_state", {}).get("on", false):
+				_say("Game/Render mode is already on.", 4)
+			else:
+				_on_pc_menu(2)
+			return HANDLED
+		if t in ["game mode off", "render mode off", "performance mode off", "turn off game mode", "turn off render mode", "stop game mode", "stop render mode"]:
+			if Cfg.g("perf_state", {}).get("on", false):
+				_on_pc_menu(2)
+			else:
+				_say("Game/Render mode isn't on.", 4)
+			return HANDLED
+		re.compile("^(clean|clear)( up)?( my)? (junk|temp files|pc|computer|laptop)$|^free up (some )?(disk )?space$|^clean up$")
+		if re.search(t):
+			_on_pc_menu(1)
+			return HANDLED
+		re.compile("^(why is|why's|is) (my |the )?(pc|computer|laptop|it|everything) (so |really |running )?(slow|laggy|sluggish)|(what'?s|what is) (slowing|hogging|using|eating) (me|my|the)|^(my )?(pc|computer|laptop) (is|feels) (so |really )?(slow|laggy)")
+		if re.search(t):
+			_flow_slow()
+			return HANDLED
+		re.compile("^(run a |do a |give me a )?(health check|check ?up|pc health)$|^(check|how'?s|how is) (on )?my (pc|computer|laptop)( doing)?$")
+		if re.search(t):
+			_flow_health(false)
+			return HANDLED
+		if t in ["undo", "undo that", "undo last"]:
+			_say(await pc.undo_last(), 5)
+			return HANDLED
+		re.compile("^(?:tidy|organise|organize|sort)(?: up)?(?: my)? (downloads|desktop|documents|pictures|videos|music)(?: folder)?(?: by (type|month))?$")
+		mm = re.search(t)
+		if mm:
+			_pc_busy_say("Looking at your %s..." % mm.get_string(1))
+			_say(await pc.tidy(mm.get_string(1), mm.get_string(2) if mm.get_string(2) != "" else "type"), 6)
+			return HANDLED
+	# Rico himself
+	if t in ["hide", "go away", "hide rico", "shoo"]:
+		_hide_for(30 * 60)
+		return HANDLED
+	if t in ["sleep", "nap", "take a nap", "go to sleep"]:
+		bubble.hide_bubble()
+		rico.sleep()
+		return HANDLED
+	if t in ["settings", "open settings"]:
+		_open_settings(0)
+		return HANDLED
+	if t in ["usage", "how much have you cost", "how much have i spent", "spending", "cost today"]:
+		return "Today: %s on Claude. This month: %s. Saved by doing things locally: %d times." % [MemScript.fmt_gbp(mem.today_gbp()), MemScript.fmt_gbp(float(mem.month_stats().usd) * mem.usd_to_gbp), int(mem.month_stats().local) + int(mem.month_stats().cache) + int(mem.month_stats().mini)]
 	return ""
 
 
@@ -698,6 +995,7 @@ func _flow_health(admin_temps: bool) -> void:
 
 
 func _health_summary(r: Dictionary) -> String:
+	_remember_pc(r)
 	var out := []
 	for d in r.get("drives", []):
 		out.append("%s %s GB free (%s%%)%s" % [d.drive, d.free_gb, d.free_percent, ", getting tight" if float(d.free_percent) < 10 else ""])
@@ -718,6 +1016,106 @@ func _health_summary(r: Dictionary) -> String:
 	if String(r.get("temperature_note", "")) != "":
 		out.append(String(r.temperature_note))
 	return "Check-up:\n" + "\n".join(out)
+
+
+# ------------------------------------------------------------------ search bar (Rico perches on it)
+
+func _open_search(prefill := "") -> void:
+	_show()
+	rico.wake()
+	bubble.hide_bubble()
+	DisplayServer.window_move_to_foreground()
+	search.open(prefill)
+	await get_tree().process_frame
+	_place_search()
+	if _pre_search_x < 0:
+		_pre_search_x = rico.position.x
+	var top: Vector2 = search.position
+	var h: Vector2 = rico.half_extents()
+	rico.state = RicoScript.State.IDLE
+	rico.bounds = Rect2(area.position, Vector2(area.size.x, top.y + 6))
+	rico.position = Vector2(top.x + search.panel.size.x - 70, top.y + 6 - h.y)
+	rico.rotation = 0
+	rico.sq = 1.25
+	rico.set_mood("smug", 999)
+	sfx.play("pop", 1.2)
+	for i in 8:
+		sparks.append({"p": rico.position + Vector2(randf_range(-30, 30), h.y), "v": Vector2(randf_range(-200, 200), randf_range(-300, -80)), "life": 0.35, "max": 0.35})
+
+
+func _place_search() -> void:
+	search.reset_size()
+	search.position = Vector2(round(area.get_center().x - search.WIDTH * 0.5), round(area.size.y * 0.24))
+
+
+func _on_search_closed() -> void:
+	rico.bounds = area
+	rico.state = RicoScript.State.FLY
+	rico.vel = Vector2(randf_range(-80, 80), -200)
+	rico.set_mood("shock", 0.6)
+	_return_after_land = true
+	_voice_for_search = false
+	if voice.recording:
+		voice.stop()
+
+
+var _return_after_land := false
+
+
+func _search_rico_items() -> Array:
+	var items := []
+	var perf_on: bool = Cfg.g("perf_state", {}).get("on", false)
+	items.append({"title": "Chat with Rico", "subtitle": "Rico", "id": "chat", "keywords": "talk ask ai"})
+	if pc.enabled():
+		items.append({"title": "What's slowing me down?", "subtitle": "PC", "id": "pc:0", "keywords": "slow cpu ram hog performance task manager"})
+		items.append({"title": "Clean up junk", "subtitle": "PC", "id": "pc:1", "keywords": "temp cache space disk free recycle"})
+		items.append({"title": "Game/Render mode: " + ("turn off" if perf_on else "turn on"), "subtitle": "PC", "id": "pc:2", "keywords": "performance fps boost power"})
+		items.append({"title": "Health check", "subtitle": "PC", "id": "pc:3", "keywords": "temps temperature updates disk drivers check up"})
+		items.append({"title": "Startup apps", "subtitle": "PC", "id": "pc:4", "keywords": "boot launch windows start"})
+		items.append({"title": "Activity log", "subtitle": "PC", "id": "pc:6", "keywords": "history what did rico do"})
+		for i in Cfg.g("routines", []).size():
+			items.append({"title": "Run routine: " + String(Cfg.g("routines")[i].name), "subtitle": "Routine", "id": "pc:%d" % (100 + i), "keywords": "routine"})
+	for i in Cfg.g("projects", []).size():
+		items.append({"title": String(Cfg.g("projects")[i].name), "subtitle": "Project · " + String(Cfg.g("projects")[i].path), "id": "proj:%d" % i, "keywords": "project open"})
+	var tabs := ["Chat", "Voice", "Reminders", "Projects", "Rico", "PC", "Activity", "Usage", "Help"]
+	for i in tabs.size():
+		items.append({"title": "Settings: " + tabs[i], "subtitle": "Rico settings", "id": "set:%d" % i, "keywords": "settings preferences options"})
+	items.append({"title": "Reminders", "subtitle": "%d pending" % reminders.pending().size(), "id": "set:2", "keywords": "timer alarm remind"})
+	items.append({"title": "Hide Rico for 30 minutes", "subtitle": "Rico", "id": "hide", "keywords": "hide away"})
+	return items
+
+
+func _on_search_ask(t: String) -> void:
+	_show()
+	bubble.chat_mode = true
+	bubble.input_row.visible = true
+	_last_was_voice = false
+	_handle_request(t)
+
+
+func _on_search_action(id: String) -> void:
+	if id == "chat":
+		_open_chat()
+	elif id == "hide":
+		_hide_for(30 * 60)
+	elif id.begins_with("pc:"):
+		_on_pc_menu(int(id.substr(3)))
+	elif id.begins_with("set:"):
+		_open_settings(int(id.substr(4)))
+	elif id.begins_with("proj:"):
+		var list: Array = Cfg.g("projects")
+		var i := int(id.substr(5))
+		if i < list.size():
+			_open_project(list[i])
+
+
+func _on_brain_downloaded(ok: bool) -> void:
+	settings.set_brain_status("")
+	if ok:
+		_say("Offline brain installed. Small talk and simple questions are free from now on.", 6)
+		sfx.play("pop")
+	else:
+		_say("The offline brain download failed. Try again from Settings > Usage.", 6)
 
 
 # ------------------------------------------------------------------ voice
@@ -762,6 +1160,11 @@ func _on_voice_started() -> void:
 
 func _on_voice_heard(text: String) -> void:
 	rico.listening = false
+	if _voice_for_search and search.visible:
+		_voice_for_search = false
+		bubble.hide_bubble()
+		search.set_query(text)
+		return
 	bubble.chat_mode = true
 	_last_was_voice = true
 	bubble.input_row.visible = true
@@ -809,6 +1212,9 @@ func _on_bubble_action(id: String) -> void:
 		_pc_busy_say("Closing %s..." % name)
 		_say(await pc.close_apps([name]), 6)
 		return
+	if id == "brain_dl":
+		_start_brain_download()
+		return
 	if id == "temps_admin":
 		_flow_health(true)
 		return
@@ -844,6 +1250,11 @@ func _on_hotkey(name: String) -> void:
 			_toggle_voice()
 		"toggle":
 			_toggle_visible()
+		"search":
+			if search.visible:
+				search.close()
+			else:
+				_open_search()
 
 
 func _on_foreground(title: String) -> void:
@@ -856,6 +1267,16 @@ func _on_foreground(title: String) -> void:
 
 
 # ------------------------------------------------------------------ dodging + per-app spots
+
+func _remember_pc(r: Dictionary) -> void:
+	var gpus := []
+	for g in r.get("gpus", []):
+		gpus.append(String(g.name))
+	var disks := []
+	for d in r.get("drives", []):
+		disks.append("%s %s GB" % [d.drive, d.size_gb])
+	mem.add_fact("PC: %s, %s; %s GB RAM; GPU %s; drives %s" % [r.get("windows", "Windows"), r.get("cpu", "?"), r.get("ram_total_gb", "?"), ", ".join(gpus), ", ".join(disks)], "pc")
+
 
 func _app_label(exe: String) -> String:
 	return exe.get_basename().capitalize() if exe != "" else "this app"
@@ -940,6 +1361,13 @@ func _on_landed() -> void:
 	else:
 		rico.set_mood("smug", 1.0)
 	_pong_count = 0
+	if _return_after_land:
+		_return_after_land = false
+		if _pre_search_x >= 0 and rico.home_x < 0:
+			rico.hop_to(_pre_search_x, true)
+		_pre_search_x = -1.0
+		_dodge_check = 0.5
+		return
 	Cfg.data.rico_x = rico.position.x
 	if _user_placed:
 		_user_placed = false
@@ -989,6 +1417,14 @@ func _process(delta: float) -> void:
 			_blip_acc = 0.0
 			sfx.play("blip%d" % (randi() % 3), randf_range(0.9, 1.15), 0.5)
 
+	if search.visible:
+		_place_search()
+		rico.look_at_pos = search.caret_point()
+		if rico.state == RicoScript.State.IDLE and rico.bounds.end.y < area.end.y:
+			rico.position.x = search.position.x + search.panel.size.x - 70
+		var has_answer: bool = not search.results.is_empty() and search.results[0].kind == "answer"
+		if has_answer:
+			rico.set_mood("happy", 0.5)
 	# bubble follows Rico
 	if bubble.visible:
 		var h: Vector2 = rico.half_extents()
@@ -1077,6 +1513,8 @@ func _update_region(force := false) -> void:
 	var r: Rect2 = rico.visual_rect(70.0)
 	if bubble.visible:
 		r = r.merge(bubble.rect_with_tail())
+	if search.visible:
+		r = r.merge(Rect2(search.position - Vector2(16, 16), search.size + Vector2(32, 40)))
 	r = r.intersection(area.grow(-0.0))
 	if r.size.x < 4 or r.size.y < 4:
 		r = Rect2(rico.position - Vector2(40, 40), Vector2(80, 80))
@@ -1137,11 +1575,27 @@ func _on_rico_clicked() -> void:
 
 func _poll_controller() -> void:
 	var pads := Input.get_connected_joypads()
+	if search.visible:
+		for b in [JOY_BUTTON_DPAD_UP, JOY_BUTTON_DPAD_DOWN, JOY_BUTTON_A, JOY_BUTTON_B, JOY_BUTTON_X, JOY_BUTTON_Y]:
+			var dn := false
+			for d in pads:
+				dn = dn or Input.is_joy_button_pressed(d, b)
+			var was_s: bool = _joy_prev.get(100 + b, false)
+			_joy_prev[100 + b] = dn
+			if dn and not was_s:
+				match b:
+					JOY_BUTTON_DPAD_UP: search.move(-1)
+					JOY_BUTTON_DPAD_DOWN: search.move(1)
+					JOY_BUTTON_A: search.activate(false)
+					JOY_BUTTON_B: search.close()
+					JOY_BUTTON_X: _search_voice()
+					JOY_BUTTON_Y: search.ask_about_current()
+		return
 	var held_back := false
 	for d in pads:
 		if Input.is_joy_button_pressed(d, JOY_BUTTON_BACK):
 			held_back = true
-	for b in [JOY_BUTTON_A, JOY_BUTTON_B, JOY_BUTTON_X, JOY_BUTTON_Y]:
+	for b in [JOY_BUTTON_A, JOY_BUTTON_B, JOY_BUTTON_X, JOY_BUTTON_Y, JOY_BUTTON_RIGHT_SHOULDER]:
 		var down := false
 		for d in pads:
 			down = down or Input.is_joy_button_pressed(d, b)
@@ -1168,6 +1622,17 @@ func _on_combo(b: int) -> void:
 			voice.stop_speaking()
 		JOY_BUTTON_Y:
 			_toggle_visible()
+		JOY_BUTTON_RIGHT_SHOULDER:
+			await _open_search()
+			_search_voice()
+
+
+func _search_voice() -> void:
+	_voice_for_search = true
+	if voice.recording:
+		voice.stop()
+	else:
+		voice.toggle()
 
 
 func _on_cfg_changed(key: String) -> void:

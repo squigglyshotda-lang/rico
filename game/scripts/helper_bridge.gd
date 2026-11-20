@@ -2,6 +2,7 @@ extends Node
 ## Starts rico_helper.exe (global hotkeys + which app is in front) and relays its events.
 
 signal hotkey(name: String)
+signal hotkey_failed(name: String)
 signal foreground_changed(title: String)
 signal focus_rect(rect: Rect2i, exe: String)   # rect size 0 = nothing to dodge
 
@@ -43,7 +44,9 @@ func _read_loop() -> void:
 
 
 func _handle(line: String) -> void:
-	if line.begins_with("HOTKEY "):
+	if line.begins_with("HOTKEYFAIL "):
+		hotkey_failed.emit(line.substr(11))
+	elif line.begins_with("HOTKEY "):
 		hotkey.emit(line.substr(7))
 	elif line.begins_with("FGRECT "):
 		var parts := line.substr(7).split(" ", true, 4)

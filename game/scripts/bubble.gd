@@ -15,6 +15,7 @@ var title_label: Label
 var text_label: RichTextLabel
 var scroll: ScrollContainer
 var actions_box: HBoxContainer
+var meta_label: Label
 var checks_box: VBoxContainer
 var details_label: RichTextLabel
 var details_scroll: ScrollContainer
@@ -89,6 +90,13 @@ func _ready() -> void:
 	text_label.add_theme_color_override("default_color", INK)
 	text_label.add_theme_font_size_override("normal_font_size", 17)
 	scroll.add_child(text_label)
+
+	meta_label = Label.new()
+	meta_label.add_theme_font_size_override("font_size", 11)
+	meta_label.add_theme_color_override("font_color", Color(INK, 0.45))
+	meta_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	meta_label.visible = false
+	v.add_child(meta_label)
 
 	checks_box = VBoxContainer.new()
 	checks_box.add_theme_constant_override("separation", 2)
@@ -198,6 +206,7 @@ func _draw_tail() -> void:
 func say(text: String, timeout := 6.0, buttons: Array = [], details := "", checklist: Array = []) -> void:
 	details_label.text = details
 	details_scroll.visible = false
+	meta_label.visible = false
 	for c in checks_box.get_children():
 		c.queue_free()
 	checks_box.visible = not checklist.is_empty()
@@ -247,6 +256,12 @@ func hide_bubble() -> void:
 	typing = false
 	_set_buttons([])
 	input.release_focus()
+
+
+func set_meta_text(t: String) -> void:
+	meta_label.text = t
+	meta_label.visible = t != ""
+	_relayout()
 
 
 func get_checks() -> Array:

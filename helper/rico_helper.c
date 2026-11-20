@@ -102,10 +102,12 @@ int main(int argc, char **argv) {
         {1, MOD_CONTROL | MOD_SHIFT, VK_SPACE, "chat"},
         {2, MOD_CONTROL | MOD_ALT, VK_SPACE, "voice"},
         {3, MOD_CONTROL | MOD_ALT, 'R', "toggle"},
+        {4, MOD_ALT, VK_SPACE, "search"},
     };
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (!RegisterHotKey(NULL, keys[i].id, keys[i].mods | 0x4000 /*MOD_NOREPEAT*/, keys[i].vk)) {
             printf("HOTKEYFAIL %s\n", keys[i].name);
+            fflush(stdout);
         }
     }
     printf("READY\n");
@@ -116,7 +118,7 @@ int main(int argc, char **argv) {
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (msg.message == WM_HOTKEY) {
-            for (int i = 0; i < 3; ++i) if ((int)msg.wParam == keys[i].id) {
+            for (int i = 0; i < 4; ++i) if ((int)msg.wParam == keys[i].id) {
                 if (keys[i].id != 3) {
                     if (!g_rico) EnumWindows(hide_from_taskbar, 0);
                     AllowSetForegroundWindow(g_parent_pid);

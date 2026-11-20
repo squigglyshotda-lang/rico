@@ -2,6 +2,7 @@ extends Window
 ## Rico's settings: API key, voice, reminders, project shortcuts, behaviour, help.
 
 signal test_requested
+signal brain_download_requested
 
 const BG := Color("231812")
 const CARD := Color("33231a")
@@ -11,6 +12,12 @@ const ACCENT := Color("e0ab45")
 var reminders: Node
 var voice: Node
 var pc: Node
+var mem: Node
+var brain: Node
+var _usage_label: Label
+var _brain_label: Label
+var _brain_btn: Button
+var _facts_list: ItemList
 var _perf_list: ItemList
 var _startup_list: ItemList
 var _startup_items: Array = []
@@ -58,6 +65,7 @@ func build() -> void:
 	_build_rico()
 	_build_pc()
 	_build_activity()
+	_build_usage()
 	_build_help()
 
 	_file_dialog = FileDialog.new()
@@ -558,14 +566,112 @@ func refresh_log() -> void:
 		_log_view.text = pc.read_log()
 
 
+func _build_usage() -> void:
+	var v := _page("Usage")
+	_heading(v, "Claude spending")
+	_usage_label = _label(v, "")
+	var h := HBoxContainer.new()
+	v.add_child(h)
+	var cl := _label(h, "Daily cap (0 = no cap)")
+	cl.custom_minimum_size.x = 220
+	var cap := SpinBox.new()
+	cap.min_value = 0
+	cap.max_value = 20
+	cap.step = 0.05
+	cap.prefix = "£"
+	cap.value = float(Cfg.g("daily_cap_gbp", 0.0))
+	cap.value_changed.connect(func(val): Cfg.s("daily_cap_gbp", val))
+	h.add_child(cap)
+	_label(v, "When the cap is hit, Rico switches to his offline brain and local commands until tomorrow.", true)
+
+	_heading(v, "Offline mini-brain")
+	_label(v, "A small AI (Llama 3.2 3B, 2 GB) that runs on this PC for chat and simple questions: free and private. Claude still handles PC jobs, files, code, Godot/Blender help and harder questions.", true)
+	var bh := HBoxContainer.new()
+	bh.add_theme_constant_override("separation", 8)
+	v.add_child(bh)
+	_brain_btn = Button.new()
+	_brain_btn.pressed.connect(func():
+		if brain.installed():
+			brain.uninstall()
+		elif brain.downloading:
+			brain.cancel_download()
+		else:
+			brain_download_requested.emit()
+		refresh_usage())
+	bh.add_child(_brain_btn)
+	_brain_label = Label.new()
+	_brain_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bh.add_child(_brain_label)
+	_check(v, "Use the offline brain when it's installed", "mini_brain")
+
+	_heading(v, "What Rico remembers about you")
+	_label(v, "Stored only on this PC. Rico sends Claude just the notes relevant to each question. Add notes by saying \"remember that...\".", true)
+	_facts_list = ItemList.new()
+	_facts_list.custom_minimum_size = Vector2(0, 140)
+	v.add_child(_facts_list)
+	var fh := HBoxContainer.new()
+	fh.add_theme_constant_override("separation", 8)
+	v.add_child(fh)
+	var del := Button.new()
+	del.text = "Forget selected"
+	del.pressed.connect(func():
+		var sel := _facts_list.get_selected_items()
+		sel.reverse()
+		for i in sel:
+			mem.remove_fact_at(i)
+		refresh_usage())
+	fh.add_child(del)
+	var cc := Button.new()
+	cc.text = "Clear answer cache"
+	cc.pressed.connect(func(): mem.clear_cache(); refresh_usage())
+	fh.add_child(cc)
+	tabs.tab_changed.connect(func(_t): refresh_usage())
+
+
+func set_brain_status(t: String) -> void:
+	if _brain_label:
+		_brain_label.text = t
+		if t == "":
+			refresh_usage()
+
+
+func refresh_usage() -> void:
+	if _usage_label == null or mem == null:
+		return
+	var d: Dictionary = mem.today_stats()
+	var m: Dictionary = mem.month_stats()
+	var r: float = mem.usd_to_gbp
+	_usage_label.text = "Today: %s  (%d Haiku, %d Sonnet calls)\nThis month: %s  (%d Haiku, %d Sonnet calls)\nTokens this month: %s in, %s out, %s read from cache\nFree answers this month: %d local commands, %d from memory, %d offline brain" % [
+		mem.fmt_gbp(float(d.usd) * r), int(d.haiku), int(d.sonnet),
+		mem.fmt_gbp(float(m.usd) * r), int(m.haiku), int(m.sonnet),
+		_k(int(m["in"]) + int(m.cw)), _k(int(m.out)), _k(int(m.cr)),
+		int(m.local), int(m.cache), int(m.mini)]
+	if brain:
+		if brain.installed():
+			_brain_btn.text = "Remove offline brain"
+			_brain_label.text = "Installed"
+		elif brain.downloading:
+			_brain_btn.text = "Cancel download"
+		else:
+			_brain_btn.text = "Download offline brain (2 GB)"
+			_brain_label.text = "Not installed"
+	_facts_list.clear()
+	for f in mem.facts:
+		_facts_list.add_item(String(f.t))
+
+
+func _k(n: int) -> String:
+	return "%.1fk" % (n / 1000.0) if n >= 1000 else str(n)
+
+
 func _build_help() -> void:
 	var v := _page("Help")
 	_heading(v, "Mouse")
 	_label(v, "Left-click Rico: chat.  Right-click: menu.  Drag: move him.  Drag and let go fast: fling him and watch him ricochet.")
 	_heading(v, "Keyboard (works from any app)")
-	_label(v, "Ctrl+Shift+Space: open chat\nCtrl+Alt+Space: talk (press again to stop)\nCtrl+Alt+R: hide or show Rico\nEsc: close the bubble")
+	_label(v, "Alt+Space: search bar (apps, files, maths, conversions, Rico actions)\nCtrl+Shift+Space: open chat\nCtrl+Alt+Space: talk (press again to stop)\nCtrl+Alt+R: hide or show Rico\nEsc: close the bubble")
 	_heading(v, "Controller (hold View/Back, then press)")
-	_label(v, "A: open chat or confirm\nX: talk / stop talking\nB: close the bubble\nY: hide or show Rico\nD-pad: move between buttons")
+	_label(v, "A: open chat or confirm\nRB: search bar, listening (D-pad picks, A opens, Y asks Rico)\nX: talk / stop talking\nB: close the bubble\nY: hide or show Rico\nD-pad: move between buttons")
 	_heading(v, "PC jobs to try")
 	_label(v, "\"Why is my PC slow?\"\n\"Clean up my junk\"\n\"Game mode on\" / \"Game mode off\"\n\"Tidy my Downloads\"\n\"Find my biggest files in Documents\"\n\"How hot is my PC running?\"\n\"Stop Spotify starting with Windows\"\n\"Make a Work routine that opens Godot and Blender\"")
 	_heading(v, "Things to say")

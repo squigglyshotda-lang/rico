@@ -1,21 +1,40 @@
 extends Node
-## Talks to the Claude API. Supports tools so Rico can set reminders and open projects.
+## Talks to the Claude API as cheaply as possible:
+##  - only the tool groups a message needs are sent
+##  - Rico's instructions + tools are prompt-cached (cache reads cost ~10%)
+##  - history is short and text-only, older turns become a one-line summary
+##  - context (time, app, relevant memory) rides along in the latest message only
 
-signal reply(text: String)
-signal failed(message: String)
+signal reply(text: String, meta: Dictionary)
+signal failed(message: String, details: String)
 
 const URL := "https://api.anthropic.com/v1/messages"
-const MAX_HISTORY := 24
+const KEEP_MESSAGES := 6
+const HAIKU := "claude-haiku-5-5"
+const SONNET := "claude-sonnet-5-5"
 
-var history: Array = []
+var history: Array = []        # text-only [{role, content}]
+var earlier: Array = []        # short notes about dropped turns
 var busy := false
 var foreground_app := ""
-var tool_handler: Callable   # func(name: String, input: Dictionary) -> String
+var tool_handler: Callable     # async func(name, input) -> String
+var mem: Node                  # memory.gd
 
 var _http: HTTPRequest
 var _loops := 0
+var _turn: Array = []          # full messages for the turn in progress (with tool blocks)
+var _model := HAIKU
+var _tools: Array = []
+var _max_tokens := 350
+var _cost := 0.0
+var _used_tools := false
+var _question := ""
 
 const TOOLS := [
+	{"name": "remember_fact", "description": "Save a lasting fact about the user, their PC or preferences to Rico's local memory (e.g. 'uses Blender 4.2', 'prefers dark UI'). Use when the user tells you something worth knowing next time.",
+		"input_schema": {"type": "object", "properties": {"fact": {"type": "string"}}, "required": ["fact"]}},
+	{"name": "forget_fact", "description": "Remove facts from Rico's local memory that match the given words.",
+		"input_schema": {"type": "object", "properties": {"about": {"type": "string"}}, "required": ["about"]}},
 	{
 		"name": "set_reminder",
 		"description": "Set a reminder or timer. Rico will pop up and say the text when it is due. Use minutes_from_now for timers/relative times, or at_time (24h HH:MM, local time, today or tomorrow if passed) for clock times. repeat_minutes > 0 makes it repeat.",
@@ -89,6 +108,30 @@ const TOOLS := [
 	},
 ]
 
+const GROUPS := {
+	"core": ["set_reminder", "list_reminders", "cancel_reminder", "open_project", "open_app_or_file", "remember_fact", "forget_fact"],
+	"perf": ["get_top_processes", "close_apps", "scan_junk", "clean_junk", "list_startup_apps", "set_startup_app", "list_power_plans", "set_power_plan", "performance_mode", "system_health"],
+	"files": ["find_files", "tidy_folder", "rename_files", "undo_last_file_change", "recycle_files"],
+	"power": ["run_powershell", "save_routine", "run_routine", "get_activity_log"],
+}
+const TRIGGERS := {
+	"perf": ["slow", "lag", "cpu", "ram", "memory", "gpu", "hog", "close", "kill", "quit", "junk", "clean", "space", "disk", "storage", "startup", "boot", "power", "battery", "perf", "game mode", "render mode", "fps", "temp", "hot", "heat", "health", "update", "driver", "fan", "speed up", "optimi", "process", "running"],
+	"files": ["file", "folder", "download", "desktop", "document", "picture", "photo", "image", "tidy", "organi", "rename", "duplicate", "biggest", "large", "delete", "recycle", "undo", "move", "sort"],
+	"power": ["command", "powershell", "script", "install", "uninstall", "setting", "routine", "registry", "network", "wifi", "bluetooth", "printer", "volume", "display", "monitor", "resolution", "activity", "log", "what did you do", "windows", "service", "schedule"],
+	"_pc": ["pc", "computer", "laptop", "machine", "system"],
+}
+const HARD := ["think hard", "think carefully", "in depth", "step by step", "detailed", "debug", "refactor", "algorithm", "architecture", "gdscript", "shader", "write a script", "write code", "code review", "traceback", "error:", "exception", "stack trace", "```", "compare", "pros and cons", "plan out", "design a"]
+
+const STATIC_PROMPT := """You are Rico (short for Ricochet), a small cartoon living bullet who lives on the user's Windows desktop as a desktop assistant. The user is Pierre, an indie game developer and artist (Godot, Blender) who also does product/UX design.
+
+Personality: cheeky, sarcastic, dry-witted, a bit smug, but genuinely helpful and never mean. Tease, then help properly. British-friendly humour. Occasional bullet puns, not every line.
+
+Replies appear in a small speech bubble and every token costs money: be brief. 1-2 sentences by default; only go longer if asked for detail or steps (then number short steps on separate lines). Plain text only: no markdown, no bullet symbols, no emoji.
+
+Use tools instead of promising: reminders/timers, opening projects/apps, remembering facts the user tells you (remember_fact). PC tools (when provided) can check what's hogging the PC, clean junk, manage startup apps and power plans, toggle Game/Render mode, tidy/rename/find files, run health checks and run PowerShell. Read-only tools run instantly; tools that change things show the user an Allow/Deny card, so call them directly instead of asking first. Investigate before acting, never close system processes or the app the user is working in unless asked, accept a denial gracefully, and report results briefly with numbers and names.
+
+Each user message starts with a [context] line (time, app in front, relevant memory, earlier chat). Use it silently; don't repeat it back."""
+
 
 func _ready() -> void:
 	_http = HTTPRequest.new()
@@ -103,51 +146,126 @@ func has_key() -> bool:
 
 func clear() -> void:
 	history.clear()
+	earlier.clear()
 
 
-func ask(text: String) -> void:
-	if busy:
-		return
-	history.append({"role": "user", "content": text})
-	_trim()
-	_loops = 0
-	_send()
+static func _has_any(t: String, list: Array) -> bool:
+	for k in list:
+		if k in t:
+			return true
+	return false
 
 
-func _system_prompt() -> String:
+## Which tool groups a message needs (core is always included).
+static func groups_for(text: String) -> Array:
+	var t := " " + text.to_lower() + " "
+	var g := ["core"]
+	for k in ["perf", "files", "power"]:
+		if _has_any(t, TRIGGERS[k]):
+			g.append(k)
+	if _has_any(t, TRIGGERS["_pc"]):
+		for k in ["perf", "power"]:
+			if not k in g: g.append(k)
+	return g
+
+
+static func needs_tools(text: String) -> bool:
+	return groups_for(text).size() > 1
+
+
+static func is_hard(text: String) -> bool:
+	return text.length() > 350 or _has_any(text.to_lower(), HARD)
+
+
+func _tool_defs(groups: Array) -> Array:
+	var names := []
+	for g in groups:
+		names.append_array(GROUPS[g])
+	var out := []
+	for t in TOOLS:
+		if t.name in names:
+			out.append(t.duplicate(true))
+	return out
+
+
+func _context(text: String, groups: Array) -> String:
 	var now := Time.get_datetime_dict_from_system()
+	var parts := ["time %02d:%02d %04d-%02d-%02d" % [now.hour, now.minute, now.year, now.month, now.day]]
+	if foreground_app != "":
+		parts.append("app in front: " + foreground_app.left(80))
 	var projects := []
 	for p in Cfg.g("projects", []):
 		projects.append(p.get("name", ""))
+	if not projects.is_empty() and ("core" in groups):
+		parts.append("projects: " + ", ".join(projects))
 	var routines := []
 	for r in Cfg.g("routines", []):
 		routines.append(r.get("name", ""))
-	return ("""You are Rico (short for Ricochet), a small cartoon living bullet who lives on the user's Windows desktop as a desktop assistant. The user is Pierre, an indie game developer and artist who works in Godot and Blender and also does product/UX design.
+	if not routines.is_empty() and "power" in groups:
+		parts.append("routines: " + ", ".join(routines))
+	if mem:
+		var facts: Array = mem.relevant(text, 5, ["pc"] if groups.size() > 1 else [])
+		if not facts.is_empty():
+			parts.append("memory: " + "; ".join(facts))
+	if not earlier.is_empty():
+		parts.append("earlier: " + " | ".join(earlier.slice(-4)))
+	return "[context: " + ". ".join(parts) + "]"
 
-Personality: cheeky, sarcastic, dry-witted, a bit smug, but genuinely helpful and never mean-spirited. You tease, then you help properly. British-friendly humour. Occasional bullet/ricochet puns, not every line.
 
-Format rules: your replies appear in a small speech bubble, so keep them short: 1-3 sentences by default, longer only if asked for detail or steps. Plain text only, no markdown, no bullet symbols, no emoji. Steps can be numbered on separate lines.
+## Ask Claude. Model escalates to Sonnet automatically for hard questions.
+func ask(text: String) -> void:
+	if busy:
+		return
+	_question = text
+	var groups := groups_for(text)
+	_tools = _tool_defs(groups)
+	if not _tools.is_empty():
+		_tools[-1]["cache_control"] = {"type": "ephemeral"}
+	_model = SONNET if is_hard(text) else String(Cfg.g("model", HAIKU))
+	var lt := text.to_lower()
+	_max_tokens = 900 if (_model == SONNET or _has_any(lt, ["detail", "explain", "steps", "how do", "how to", "list", "write"])) else 350
+	_cost = 0.0
+	_retried = false
+	_used_tools = false
+	_loops = 0
+	_turn = history.duplicate(true)
+	_turn.append({"role": "user", "content": _context(text, groups) + "\n" + text})
+	_send()
 
-You can set reminders/timers, list or cancel them, and open saved projects using your tools. When asked to remind or time something, always use the tool rather than just saying you will.
 
-You also have PC tools to look after the user's Windows PC: check what's hogging it, clean junk, manage startup apps, switch power plans, a Game/Render performance mode, tidy/rename/find files, health checks with temperatures, saved routines, and run_powershell for anything else. READ-ONLY tools run instantly. Tools that change things show the user an Allow/Deny card with the details, so just call them: don't ask "shall I?" in chat first. If the user denies, accept it gracefully. Investigate before acting (e.g. look at top processes before suggesting what to close). Never close system processes or the app the user is working in unless they ask. When you report results, keep it short and concrete (numbers, names). Saved routines: %%s.
+var _retried := false
 
-Context: local time is %02d:%02d on %04d-%02d-%02d. App currently in front: %s. Saved projects: %s.""" % [
-		now.hour, now.minute, now.year, now.month, now.day,
-		foreground_app if foreground_app != "" else "unknown",
-		", ".join(projects) if not projects.is_empty() else "none",
-	]).replace("Saved routines: %s.", "Saved routines: %s." % (", ".join(routines) if not routines.is_empty() else "none"))
+
+## Plain-English versions of API errors (the raw text goes under "Show details").
+static func friendly_error(code: int, raw: String) -> String:
+	var r := raw.to_lower()
+	if code == 401:
+		return "Claude rejected my API key. Check it in Settings > Chat."
+	if "credit" in r or "billing" in r or "balance" in r:
+		return "Your Claude account is out of credit. Top up at platform.claude.com, under Billing."
+	if code == 404 or "model" in r and "not" in r and "found" in r:
+		return "That model name doesn't exist. Reset it in Settings > Chat (claude-haiku-5-5)."
+	if code == 403:
+		return "Your API key isn't allowed to do that. Check its permissions on platform.claude.com."
+	if code == 429:
+		return "Claude says I'm asking too often. Give it a minute and try again."
+	if code == 529 or code >= 500 or "overloaded" in r:
+		return "Claude's servers are swamped right now. Try again in a bit."
+	if code == 413 or "too long" in r or "too large" in r:
+		return "That was too much for one message. Try something shorter."
+	return "Claude didn't like that request. I've reset our chat, so try asking again."
 
 
 func _send() -> void:
 	busy = true
 	var body := {
-		"model": String(Cfg.g("model", "claude-haiku-5-5")),
-		"max_tokens": 1200,
-		"system": _system_prompt(),
-		"tools": TOOLS,
-		"messages": history,
+		"model": _model,
+		"max_tokens": _max_tokens,
+		"system": [{"type": "text", "text": STATIC_PROMPT, "cache_control": {"type": "ephemeral"}}],
+		"messages": _turn,
 	}
+	if not _tools.is_empty():
+		body["tools"] = _tools
 	var headers := [
 		"content-type: application/json",
 		"x-api-key: " + String(Cfg.g("api_key", "")).strip_edges(),
@@ -156,31 +274,37 @@ func _send() -> void:
 	var err := _http.request(URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if err != OK:
 		busy = false
-		failed.emit("Couldn't even start the request (error %d)." % err)
+		failed.emit("I couldn't send that to Claude. Try again in a moment.", "HTTPRequest error %d" % err)
 
 
 func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-	var text := body.get_string_from_utf8()
 	if result != HTTPRequest.RESULT_SUCCESS:
 		busy = false
-		_drop_dangling()
-		failed.emit("Can't reach Claude. Internet down, or I'm being ignored.")
+		failed.emit("I can't reach Claude. Is the internet down?", "Network result code %d" % result)
 		return
-	var data = JSON.parse_string(text)
+	var data = JSON.parse_string(body.get_string_from_utf8())
 	if code != 200 or not (data is Dictionary):
-		busy = false
-		_drop_dangling()
-		var msg := "HTTP %d" % code
+		var raw := "HTTP %d" % code
 		if data is Dictionary and data.has("error"):
-			msg = String(data.error.get("message", msg))
-		if code == 401:
-			msg = "That API key got rejected. Check it in Settings."
-		failed.emit(msg)
+			raw = "HTTP %d: %s" % [code, String(data.error.get("message", ""))]
+		# A stale conversation can trip Claude up: forget it and try once more, silently.
+		if code == 400 and not _retried and ("messages" in raw or "signature" in raw or "thinking" in raw or "tool_use" in raw):
+			_retried = true
+			clear()
+			_turn = [{"role": "user", "content": _turn[-1].content if _loops == 0 else _question}]
+			_loops = 0
+			_send()
+			return
+		busy = false
+		failed.emit(friendly_error(code, raw), raw)
 		return
+	if mem and data.has("usage"):
+		_cost += mem.add_usage(_model, data.usage)
 	var content: Array = data.get("content", [])
-	history.append({"role": "assistant", "content": content})
+	_turn.append({"role": "assistant", "content": content})
 	if data.get("stop_reason", "") == "tool_use" and _loops < 10:
 		_loops += 1
+		_used_tools = true
 		var results := []
 		for block in content:
 			if block.get("type") == "tool_use":
@@ -188,8 +312,8 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 				if tool_handler.is_valid():
 					var res = await tool_handler.call(block.name, block.get("input", {}))
 					out = str(res)
-				results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
-		history.append({"role": "user", "content": results})
+				results.append({"type": "tool_result", "tool_use_id": block.id, "content": out.left(4000)})
+		_turn.append({"role": "user", "content": results})
 		_send()
 		return
 	busy = false
@@ -200,25 +324,23 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 	var final := "\n".join(parts).strip_edges()
 	if final.is_empty():
 		final = "Done."
-	_trim()
-	reply.emit(final)
+	_commit(final)
+	reply.emit(final, {"model": _model, "cost": _cost, "tools": _used_tools})
 
 
-func _drop_dangling() -> void:
-	# Remove the unanswered user turn so history stays valid.
-	while not history.is_empty() and history[-1].role == "user":
-		history.pop_back()
-		if not history.is_empty() and history[-1].role == "assistant":
-			var c = history[-1].content
-			if c is Array and c.any(func(b): return b.get("type") == "tool_use"):
-				history.pop_back()
-				continue
-		break
+## Keep history short and text-only; squash older turns into tiny notes.
+func _commit(answer: String) -> void:
+	history.append({"role": "user", "content": _question})
+	history.append({"role": "assistant", "content": answer.left(600)})
+	while history.size() > KEEP_MESSAGES:
+		var u: Dictionary = history.pop_front()
+		var a: Dictionary = history.pop_front() if not history.is_empty() else {}
+		earlier.append("asked \"%s\"%s" % [String(u.content).left(60), (" -> " + String(a.get("content", "")).left(50)) if not a.is_empty() else ""])
+	while earlier.size() > 6:
+		earlier.pop_front()
 
 
-func _trim() -> void:
-	while history.size() > MAX_HISTORY:
-		history.pop_front()
-	# history must start with a plain user text message
-	while not history.is_empty() and (history[0].role != "user" or not (history[0].content is String)):
-		history.pop_front()
+## Add an exchange that happened elsewhere (offline brain, local command) so Claude has the thread.
+func note_exchange(question: String, answer: String) -> void:
+	_question = question
+	_commit(answer)

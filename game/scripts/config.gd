@@ -32,6 +32,9 @@ var data := {
 	"perf_state": {},
 	"routines": [],
 	"last_undo": {},
+	"daily_cap_gbp": 0.0,
+	"mini_brain": true,
+	"brain_offered": false,
 }
 
 
