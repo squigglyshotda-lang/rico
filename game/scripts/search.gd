@@ -252,12 +252,12 @@ func _ensure_server() -> void:
 		return
 	var dir := OS.get_user_data_dir().path_join("ps")
 	DirAccess.make_dir_recursive_absolute(dir)
-	var path := dir.path_join("search_server.ps1")
+	var path := dir.path_join("search_server.txt").replace("/", "\\")
 	var f := FileAccess.open(path, FileAccess.WRITE)
-	f.store_buffer(PackedByteArray([0xEF, 0xBB, 0xBF]))
 	f.store_string(FileAccess.get_file_as_string("res://ps/search_server.ps1"))
 	f.close()
-	var info := OS.execute_with_pipe("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", path], true)
+	var PcScript := load("res://scripts/pc.gd")
+	var info := OS.execute_with_pipe(PcScript.ps_exe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", PcScript.encode(PcScript.loader(path))], true)
 	if info.is_empty():
 		return
 	_pipe = info.stdio

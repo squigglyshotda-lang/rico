@@ -5,8 +5,7 @@ extends Node
 
 signal _job_done(id: int, result: Dictionary)
 
-const PRELUDE := """param([string]$Out)
-$ErrorActionPreference = 'SilentlyContinue'
+const PRELUDE := """$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 function Done($o) { $o | ConvertTo-Json -Depth 6 -Compress | Out-File -Encoding utf8 -FilePath $Out }
 """
@@ -23,6 +22,22 @@ func enabled() -> bool:
 
 
 # ------------------------------------------------------------------ runner
+# Jobs run as in-memory script blocks (-EncodedCommand loading the job text), not as
+# .ps1 files, so Windows' script execution policy can't block them.
+
+static func ps_exe() -> String:
+	var root := OS.get_environment("SystemRoot")
+	var p := (root if root != "" else "C:\\Windows").path_join("System32/WindowsPowerShell/v1.0/powershell.exe")
+	return p if FileAccess.file_exists(p) else "powershell.exe"
+
+
+static func encode(cmd: String) -> String:
+	return Marshalls.raw_to_base64(cmd.to_utf16_buffer())
+
+
+static func loader(path: String) -> String:
+	return "& ([ScriptBlock]::Create([IO.File]::ReadAllText('%s', [Text.Encoding]::UTF8)))" % path.replace("'", "''")
+
 
 func run(script: String, args := {}, admin := false) -> Dictionary:
 	if OS.get_name() != "Windows":
@@ -31,25 +46,20 @@ func run(script: String, args := {}, admin := false) -> Dictionary:
 	var id := _seq
 	var dir := OS.get_user_data_dir().path_join("ps")
 	DirAccess.make_dir_recursive_absolute(dir)
-	var ps1 := dir.path_join("job_%d.ps1" % id)
-	var out := dir.path_join("job_%d.json" % id)
+	var job := dir.path_join("job_%d.txt" % id).replace("/", "\\")
+	var out := dir.path_join("job_%d.json" % id).replace("/", "\\")
 	var body := FileAccess.get_file_as_string("res://ps/%s.ps1" % script)
-	var text := PRELUDE + "$A = @'\n" + JSON.stringify(args) + "\n'@ | ConvertFrom-Json\n" + body + "\n"
-	var f := FileAccess.open(ps1, FileAccess.WRITE)
-	f.store_buffer(PackedByteArray([0xEF, 0xBB, 0xBF]))   # BOM so Windows PowerShell reads UTF-8 paths correctly
+	if body == "":
+		return {"error": "Rico's %s script is missing from this build." % script}
+	var text := "$Out = '%s'\n" % out.replace("'", "''") + PRELUDE + "$A = @'\n" + JSON.stringify(args) + "\n'@ | ConvertFrom-Json\n" + body + "\n"
+	var f := FileAccess.open(job, FileAccess.WRITE)
 	f.store_string(text)
 	f.close()
 	if FileAccess.file_exists(out):
 		DirAccess.remove_absolute(out)
-	var launcher := ""
-	if admin:
-		launcher = dir.path_join("elevate.ps1")
-		var lf := FileAccess.open(launcher, FileAccess.WRITE)
-		lf.store_string(FileAccess.get_file_as_string("res://ps/elevate.ps1"))
-		lf.close()
 	var th := Thread.new()
 	_threads[id] = th
-	th.start(_exec.bind(id, ps1, out, launcher))
+	th.start(_exec.bind(id, script, job, out, admin))
 	while true:
 		var r: Array = await _job_done
 		if r[0] == id:
@@ -57,26 +67,44 @@ func run(script: String, args := {}, admin := false) -> Dictionary:
 	return {}
 
 
-func _exec(id: int, ps1: String, out: String, launcher: String) -> void:
+func _exec(id: int, script: String, job: String, out: String, admin: bool) -> void:
 	var o := []
-	var base := ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"]
-	if launcher != "":
-		OS.execute("powershell.exe", base + [launcher, "-Script", ps1, "-Out", out], o, true)
-	else:
-		OS.execute("powershell.exe", base + [ps1, "-Out", out], o, true)
+	var cmd := loader(job)
+	if admin:
+		var inner := encode(cmd)
+		cmd = "try { Start-Process -FilePath '%s' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand %s' -ErrorAction Stop } catch { '{\"error\":\"Admin permission was declined.\"}' | Out-File -Encoding utf8 -FilePath '%s' }" % [ps_exe(), inner, out.replace("'", "''")]
+	var code := OS.execute(ps_exe(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", encode(cmd)], o, true)
 	var result := {}
+	var raw := "\n".join(o).strip_edges()
 	if FileAccess.file_exists(out):
 		var txt := FileAccess.get_file_as_string(out).strip_edges()
-		if txt.begins_with("﻿"):
+		if txt.begins_with("\ufeff"):
 			txt = txt.substr(1)
 		var parsed = JSON.parse_string(txt)
 		result = parsed if parsed is Dictionary else {"error": "Couldn't read the result.", "raw": txt.left(500)}
 		DirAccess.remove_absolute(out)
 	else:
-		var msg := "\n".join(o).strip_edges().left(600)
-		result = {"error": "The task didn't finish." + (" " + msg if msg != "" else "")}
-	DirAccess.remove_absolute(ps1)
+		result = {"error": "The %s job didn't finish (code %d). %s" % [script, code, raw.left(300)]}
+	if result.has("error"):
+		_log_error(script, code, raw, String(result.error))
+	DirAccess.remove_absolute(job)
 	call_deferred("_finish", id, result)
+
+
+func _log_error(script: String, code: int, output: String, err: String) -> void:
+	var dir := OS.get_user_data_dir().path_join("logs")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var path := dir.path_join("pc_errors.log")
+	var f: FileAccess
+	if FileAccess.file_exists(path):
+		f = FileAccess.open(path, FileAccess.READ_WRITE)
+		f.seek_end()
+	else:
+		f = FileAccess.open(path, FileAccess.WRITE)
+	f.store_line("==== %s  job=%s  exit=%d  powershell=%s" % [Time.get_datetime_string_from_system(), script, code, ps_exe()])
+	f.store_line("error: " + err)
+	f.store_line("output: " + output.left(3000))
+	f.close()
 
 
 func _finish(id: int, result: Dictionary) -> void:
