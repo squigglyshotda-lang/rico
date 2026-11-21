@@ -58,6 +58,7 @@ Function CloseRico
   nsExec::Exec 'taskkill /IM Rico.exe /F'
   nsExec::Exec 'taskkill /IM rico_helper.exe /F'
   nsExec::Exec 'taskkill /IM llama-server.exe /F'
+  nsExec::Exec 'taskkill /IM rico_voice.exe /F'
   nsExec::Exec 'taskkill /IM whisper-cli.exe /F'
   Sleep 800
 FunctionEnd
@@ -117,6 +118,7 @@ Section "Uninstall"
   nsExec::Exec 'taskkill /IM Rico.exe /F'
   nsExec::Exec 'taskkill /IM rico_helper.exe /F'
   nsExec::Exec 'taskkill /IM llama-server.exe /F'
+  nsExec::Exec 'taskkill /IM rico_voice.exe /F'
   Sleep 800
   Delete "$SMPROGRAMS\Rico.lnk"
   Delete "$DESKTOP\Rico.lnk"

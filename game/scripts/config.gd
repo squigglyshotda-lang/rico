@@ -11,6 +11,10 @@ var data := {
 	"model": "claude-haiku-5-5",
 	"speak_replies": 1,        # 0 off, 1 when I talk, 2 always
 	"tts_voice": "",
+	"voice_engine": "rico",
+	"voice_pitch": 1.22,
+	"voice_shimmer": 0.5,
+	"voice_device": "gpu",
 	"tts_rate": 1.05,
 	"tts_pitch": 1.2,
 	"talk_blips": true,

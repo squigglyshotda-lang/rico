@@ -8,6 +8,7 @@ signal heard(text: String)
 signal failed(message: String)
 
 const MAX_SECONDS := 30.0
+const VoiceOutScript := preload("res://scripts/voice_out.gd")
 
 var recording := false
 var busy := false
@@ -217,8 +218,19 @@ func voices() -> Array:
 	return DisplayServer.tts_get_voices()
 
 
-func speak(text: String) -> void:
+var out: Node                 # VoiceOut: Rico's own voice
+var mood_fn := Callable()     # returns Rico's current mood
+
+
+func speak(text: String, glitch := false) -> void:
 	DisplayServer.tts_stop()
+	if text.begins_with("Ugh. ") or text.begins_with("Ugh, "):
+		glitch = true
+	if out and out.can_speak():
+		var mood: String = mood_fn.call() if mood_fn.is_valid() else "smug"
+		out.speak(text, "annoyed" if glitch else mood, glitch)
+		return
+	text = VoiceOutScript.strip_tags(text)
 	var voice := String(Cfg.g("tts_voice", ""))
 	if voice == "":
 		var list := DisplayServer.tts_get_voices_for_language("en")
@@ -230,6 +242,8 @@ func speak(text: String) -> void:
 
 func stop_speaking() -> void:
 	DisplayServer.tts_stop()
+	if out:
+		out.stop()
 
 
 func _exit_tree() -> void:

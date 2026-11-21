@@ -29,6 +29,9 @@ GODOT="$CACHE/Godot_v${GODOT_VER}-stable_linux.x86_64"
 # Third-party runtimes
 fetch "https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_TAG}/whisper-bin-x64.zip" whisper.zip
 fetch "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/llama-${LLAMA_TAG}-bin-win-cpu-x64.zip" llama.zip
+fetch "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/llama-${LLAMA_TAG}-bin-win-vulkan-x64.zip" llama-vulkan.zip
+fetch "https://huggingface.co/onnx-community/snac_24khz-ONNX/resolve/main/onnx/decoder_model.onnx" snac_decoder.onnx
+[ -f onnxruntime.whl ] || { pip download --no-deps -q onnxruntime==1.20.1 --platform win_amd64 --python-version 3.12 --only-binary=:all: -d ortwhl && mv ortwhl/*.whl onnxruntime.whl; }
 fetch "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/${LHM_TAG}/LibreHardwareMonitor.zip" lhm.zip
 
 # Export the game with the release version stamped in
@@ -44,9 +47,15 @@ cd "$OUT"
 cp "$ROOT/helper/rico_helper.exe" .
 cp "$ROOT/installer/rico.ico" .
 cp "$ROOT/installer/README.txt" "$ROOT/installer/LICENSE-Fredoka-font.txt" "$ROOT/installer/LICENSE-tabler-icons.txt" .
-mkdir -p whisper brain tools/lhm
+mkdir -p whisper brain voice tools/lhm
 unzip -oqj "$CACHE/whisper.zip" 'Release/whisper-cli.exe' 'Release/whisper.dll' 'Release/ggml.dll' 'Release/ggml-base.dll' 'Release/ggml-cpu.dll' -d whisper
 unzip -oqj "$CACHE/llama.zip" 'llama-server.exe' 'llama-server-impl.dll' 'llama-common.dll' 'llama.dll' 'mtmd.dll' 'ggml.dll' 'ggml-base.dll' 'ggml-rpc.dll' 'ggml-cpu-*.dll' 'libomp.dll' 'LICENSE*' -d brain
+# Rico's own voice: Vulkan llama.cpp (AMD/NVIDIA/Intel GPUs, falls back to CPU) + SNAC decoder
+unzip -oqj "$CACHE/llama-vulkan.zip" 'llama-server.exe' 'llama-server-impl.dll' 'llama-common.dll' 'llama.dll' 'mtmd.dll' 'ggml.dll' 'ggml-base.dll' 'ggml-rpc.dll' 'ggml-vulkan.dll' 'ggml-cpu-*.dll' 'libomp.dll' -d voice
+unzip -oqj "$CACHE/onnxruntime.whl" 'onnxruntime/capi/onnxruntime.dll' -d voice
+cp "$CACHE/snac_decoder.onnx" voice/snac_decoder.onnx
+cp "$ROOT/helper/rico_voice.exe" voice/
+cp "$ROOT/installer/LICENSE-voice.txt" voice/
 unzip -oq "$CACHE/lhm.zip" -d tools/lhm -x '*.pdb' '*.xml' '*/*.resources.dll'
 curl -fsSL -o whisper/LICENSE-whisper.cpp.txt https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE
 curl -fsSL -o brain/LICENSE-llama.cpp.txt https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE

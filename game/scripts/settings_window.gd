@@ -25,6 +25,9 @@ var _game_items: Array = []
 var _update_label: Label
 var mem: Node
 var brain: Node
+var voice_out: Node
+var _voice_btn: Button
+var _voice_label: Label
 var _usage_label: Label
 var _brain_label: Label
 var _brain_btn: Button
@@ -247,7 +250,8 @@ func _check(parent: Node, text: String, key: String, cb := Callable()) -> CheckB
 	return c
 
 
-func _option(parent: Node, text: String, key: String, items: Array) -> OptionButton:
+## values: optional stored values per item (default: the item index).
+func _option(parent: Node, text: String, key: String, items: Array, values: Array = []) -> OptionButton:
 	var h := HBoxContainer.new()
 	parent.add_child(h)
 	var l := _label(h, text)
@@ -255,8 +259,16 @@ func _option(parent: Node, text: String, key: String, items: Array) -> OptionBut
 	var o := OptionButton.new()
 	for i in items:
 		o.add_item(i)
-	o.selected = int(Cfg.g(key))
-	o.item_selected.connect(func(i): Cfg.s(key, i))
+	if values.is_empty():
+		o.selected = int(Cfg.g(key))
+		o.item_selected.connect(func(i): Cfg.s(key, i))
+	else:
+		o.selected = maxi(0, values.find(Cfg.g(key)))
+		o.item_selected.connect(func(i):
+			Cfg.s(key, values[i])
+			if voice_out and key == "voice_device":
+				voice_out.stop_servers()
+				voice_out.warm_up())
 	h.add_child(o)
 	return o
 
@@ -312,6 +324,37 @@ func _build_voice() -> void:
 	_label(v, "Press Ctrl+Alt+Space (or the Mic button) to start listening, and again to stop. Speech is turned into text on this PC with offline Whisper; nothing leaves your machine until it's sent to Claude as a message.", true)
 	_heading(v, "Rico talking back")
 	_option(v, "Read replies aloud", "speak_replies", ["Never", "When I talk to him", "Always"])
+	_option(v, "His voice", "voice_engine", ["Rico's own voice", "Windows voice (basic)"], ["rico", "windows"])
+	_heading(v, "Rico's own voice")
+	_label(v, "An expressive voice that runs entirely on this PC (2 GB, uses your graphics card). In games he switches to the Windows voice so you don't lose frames.", true)
+	var vh := HBoxContainer.new()
+	vh.add_theme_constant_override("separation", 8)
+	v.add_child(vh)
+	_voice_btn = Button.new()
+	_voice_btn.pressed.connect(func():
+		if voice_out.installed():
+			voice_out.uninstall()
+		elif voice_out.downloading:
+			voice_out.cancel_download()
+		else:
+			voice_out.download()
+		refresh_voice())
+	vh.add_child(_voice_btn)
+	_voice_label = Label.new()
+	_voice_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vh.add_child(_voice_label)
+	_voice_slider(v, "Cartoon pitch", "voice_pitch", 1.0, 1.45)
+	_voice_slider(v, "Hologram shimmer", "voice_shimmer", 0.0, 1.0)
+	_option(v, "Run his voice on", "voice_device", ["Graphics card (fast)", "Processor (slower)"], ["gpu", "cpu"])
+	var try := Button.new()
+	try.text = "Hear Rico"
+	try.pressed.connect(func(): voice.speak(preload("res://scripts/lines.gd").pick([
+		"Rico here. <chuckle> Loaded, cocked and mildly sarcastic.",
+		"Testing, testing. Yep, still the best-sounding thing on this desk.",
+		"Oh, you want to hear me talk? <laugh> Finally, some taste."])))
+	v.add_child(try)
+	tabs.tab_changed.connect(func(_t): refresh_voice())
+	_heading(v, "Windows voice (used in games)")
 	var h := HBoxContainer.new()
 	v.add_child(h)
 	var l := _label(h, "Voice")
@@ -330,10 +373,6 @@ func _build_voice() -> void:
 	h.add_child(vo)
 	_slider(v, "Voice pitch", "tts_pitch", 0.6, 1.8)
 	_slider(v, "Voice speed", "tts_rate", 0.7, 1.6)
-	var try := Button.new()
-	try.text = "Hear Rico"
-	try.pressed.connect(func(): voice.speak("Rico here. Loaded, cocked and mildly sarcastic."))
-	v.add_child(try)
 	_check(v, "Talk blips while text types out", "talk_blips")
 
 
@@ -778,6 +817,33 @@ func _build_usage() -> void:
 	cc.pressed.connect(func(): mem.clear_cache(); refresh_usage())
 	fh.add_child(cc)
 	tabs.tab_changed.connect(func(_t): refresh_usage())
+
+
+func _voice_slider(parent: Node, text: String, key: String, lo: float, hi: float) -> void:
+	_slider(parent, text, key, lo, hi)
+	var sl: HSlider = parent.get_child(parent.get_child_count() - 1).get_child(1)
+	sl.step = 0.01
+	sl.value_changed.connect(func(_v): voice_out.apply_settings())
+
+
+func set_voice_status(t: String) -> void:
+	if _voice_label:
+		_voice_label.text = t
+		if t == "":
+			refresh_voice()
+
+
+func refresh_voice() -> void:
+	if _voice_btn == null or voice_out == null:
+		return
+	if voice_out.installed():
+		_voice_btn.text = "Remove Rico's voice"
+		_voice_label.text = "Installed" + (", awake" if voice_out.ready_now() else "")
+	elif voice_out.downloading:
+		_voice_btn.text = "Cancel download"
+	else:
+		_voice_btn.text = "Download Rico's voice (2 GB)"
+		_voice_label.text = "Not installed: using the Windows voice"
 
 
 func set_brain_status(t: String) -> void:

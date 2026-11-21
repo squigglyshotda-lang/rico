@@ -1,0 +1,7 @@
+Rico's voice uses these open-source parts, all running on your PC:
+
+- llama.cpp (MIT licence) - https://github.com/ggml-org/llama.cpp
+- ONNX Runtime (MIT licence) - https://github.com/microsoft/onnxruntime
+- SNAC audio decoder by Hubert Siuzdak (MIT licence) - https://github.com/hubertsiuzdak/snac
+- Orpheus TTS 3B by Canopy Labs (Apache 2.0 licence), downloaded on first use - https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
+  Quantised GGUF build by Unsloth - https://huggingface.co/unsloth/orpheus-3b-0.1-ft-GGUF

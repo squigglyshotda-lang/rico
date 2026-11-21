@@ -50,6 +50,7 @@ var lid := 0.35
 var sq := 1.0            # vertical squash (1 = normal)
 var sq_vel := 0.0
 var talk_open := 0.0
+var voice_level := -1.0   # loudness of his real voice, -1 when it isn't playing
 var drag_offset := Vector2.ZERO
 var drag_vel := Vector2.ZERO
 var _last_drag_pos := Vector2.ZERO
@@ -252,7 +253,11 @@ func _process(delta: float) -> void:
 			mood_timer = 999
 	waving = maxf(0.0, waving - delta)
 
-	if talking:
+	if talking and voice_level >= 0.0:
+		# follow the real loudness of his voice
+		var target := clampf(voice_level * 6.0, 0.0, 1.0)
+		talk_open = lerpf(talk_open, target, clampf(delta * 28.0, 0.0, 1.0))
+	elif talking:
 		talk_open = 0.5 + 0.5 * sin(t * 22.0) * sin(t * 9.0 + 1.0)
 	else:
 		talk_open = move_toward(talk_open, 0.0, delta * 6.0)

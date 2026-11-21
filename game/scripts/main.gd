@@ -8,6 +8,7 @@ const SfxScript := preload("res://scripts/sfx.gd")
 const HelperScript := preload("res://scripts/helper_bridge.gd")
 const AiScript := preload("res://scripts/ai.gd")
 const VoiceScript := preload("res://scripts/voice.gd")
+const VoiceOutScript := preload("res://scripts/voice_out.gd")
 const RemindersScript := preload("res://scripts/reminders.gd")
 const SettingsScript := preload("res://scripts/settings_window.gd")
 const PcScript := preload("res://scripts/pc.gd")
@@ -33,6 +34,7 @@ var sfx
 var helper
 var ai
 var voice
+var voice_out
 var reminders
 var settings
 var pc
@@ -115,6 +117,9 @@ func _ready() -> void:
 	helper = HelperScript.new(); add_child(helper)
 	ai = AiScript.new(); add_child(ai)
 	voice = VoiceScript.new(); add_child(voice)
+	voice_out = VoiceOutScript.new(); add_child(voice_out)
+	voice.out = voice_out
+	voice.mood_fn = func() -> String: return rico.mood
 	reminders = RemindersScript.new(); add_child(reminders)
 	games = GamesScript.new(); add_child(games)
 	bambu = BambuScript.new(); add_child(bambu)
@@ -174,6 +179,11 @@ func _ready() -> void:
 	settings = SettingsScript.new()
 	settings.reminders = reminders
 	settings.voice = voice
+	settings.voice_out = voice_out
+	voice_out.in_game = func() -> bool: return games.current() != ""
+	voice_out.download_progress.connect(func(p): settings.set_voice_status("Downloading... %d%%" % p))
+	voice_out.download_done.connect(_on_voice_downloaded)
+	get_tree().create_timer(8.0).timeout.connect(func(): if int(Cfg.g("speak_replies", 1)) > 0: voice_out.warm_up())
 	settings.pc = pc
 	settings.updater = updater
 	settings.games = games
@@ -215,6 +225,9 @@ func _ready() -> void:
 			print(q, " | local=", "HANDLED" if l == HANDLED else l.left(40), " | groups=", ai.groups_for(q), " hard=", ai.is_hard(q), " claude=", ai.needs_tools(q) or ai.is_hard(q) or _wants_claude(q))
 		get_tree().quit()
 		return
+	if OS.has_environment("RICO_VOICE_TEST"):
+		_run_voice_test.call_deferred()
+		return
 	if OS.has_environment("RICO_SHOT_SHOP"):
 		_run_shop_shot.call_deferred()
 		return
@@ -241,7 +254,10 @@ func _first_words() -> void:
 	var notes: Dictionary = updater.take_update_notes()
 	if not notes.is_empty():
 		var body := String(notes.get("notes", "")).strip_edges()
-		_say("Fresh upgrade: I'm now v%s.%s" % [notes.get("to", "?"), ("\n" + body.left(400)) if body != "" else ""], -1, false, [["dismiss", "Nice"]])
+		var btns: Array = [["dismiss", "Nice"]]
+		if not voice_out.installed() and not voice_out.downloading:
+			btns = [["voice_dl", "Get my new voice (2 GB)"], ["dismiss", "Later"]]
+		_say("Fresh upgrade: I'm now v%s.%s" % [notes.get("to", "?"), ("\n" + body.left(400)) if body != "" else ""], -1, false, btns)
 		return
 	if not Cfg.g("welcomed", false):
 		_welcome(1)
@@ -307,6 +323,34 @@ func _run_dodge_test() -> void:
 	await tree.create_timer(3.0).timeout
 	print("small window up top: x=", rico.position.x)
 	tree.quit()
+
+
+func _run_voice_test() -> void:
+	_shot_mode = true
+	Cfg.data.welcomed = true
+	Cfg.data.speak_replies = 2
+	rico.set_mood("smug", 99)
+	print("VOICE can_speak=%s installed=%s wanted=%s" % [voice_out.can_speak(), voice_out.installed(), voice_out.wanted()])
+	var t0 := Time.get_ticks_msec()
+	_reply(OS.get_environment("RICO_VOICE_LINE") if OS.has_environment("RICO_VOICE_LINE") else "Oh, look who's back! Brilliant.")
+	var first := -1
+	var mouth := 0.0
+	var last_print := 0
+	while Time.get_ticks_msec() - t0 < int(OS.get_environment("RICO_VOICE_WAIT") if OS.has_environment("RICO_VOICE_WAIT") else "300000"):
+		if Time.get_ticks_msec() - last_print > 15000:
+			last_print = Time.get_ticks_msec()
+			print("VOICE t=%d ready=%s starting=%s http=%d queue=%d waiting=%d playing=%s pending=%d" % [(last_print - t0) / 1000, voice_out.ready_now(), voice_out._starting, voice_out._http_state, voice_out._queue.size(), voice_out._dec_waiting, voice_out.playing, voice_out._pending_audio.size()])
+		await get_tree().process_frame
+		if voice_out.playing and first < 0:
+			first = Time.get_ticks_msec() - t0
+		if voice_out.playing:
+			mouth = maxf(mouth, rico.talk_open)
+		if first >= 0 and not voice_out.playing:
+			break
+	print("VOICE first sound after %d ms, total %d ms, max mouth %.2f, bubble: %s" % [first, Time.get_ticks_msec() - t0, mouth, bubble._full_text])
+	voice_out.save_dump(OS.get_environment("RICO_VOICE_TEST"))
+	voice_out.stop_servers()
+	get_tree().quit()
 
 
 func _run_shop_shot() -> void:
@@ -693,7 +737,7 @@ func _say(text: String, timeout := 6.0, keep_chat := false, buttons: Array = [])
 	if not keep_chat and bubble.chat_mode and buttons.is_empty():
 		keep_chat = true
 	bubble.chat_mode = keep_chat
-	bubble.say(text, timeout, buttons)
+	bubble.say(VoiceOutScript.strip_tags(text), timeout, buttons)
 	sfx.play("pop", randf_range(0.95, 1.1), 0.7)
 
 
@@ -754,6 +798,8 @@ func _handle_request(text: String) -> void:
 		return
 	if brain.enabled():
 		rico.thinking = true
+		if randf() < 0.5:
+			voice_out.noise(Lines.pick(["hmm", "hmm2"]))
 		_say("...", -1, true)
 		_brain_question = text
 		brain.chat(_brain_messages(text))
@@ -818,6 +864,8 @@ func _on_brain_failed(msg: String) -> void:
 		ai.ask(_brain_question)   # fall back to Claude
 		return
 	_say("Ugh. " + msg, -1, true)
+	if int(Cfg.g("speak_replies", 1)) == 2 or _last_was_voice:
+		voice.speak("Ugh. " + msg)
 
 
 func _reply(text: String, meta := "") -> void:
@@ -1602,6 +1650,10 @@ func _on_bubble_action(id: String) -> void:
 	if id == "brain_dl":
 		_start_brain_download()
 		return
+	if id == "voice_dl":
+		voice_out.download()
+		_say("Downloading my new voice: 2 GB, so give it a few minutes. You'll hear about it. Literally.", 8)
+		return
 	if id == "temps_admin":
 		_flow_health(true)
 		return
@@ -1907,6 +1959,41 @@ func _minute_checks() -> void:
 
 # ------------------------------------------------------------------ games
 
+# ------------------------------------------------------------------ voice
+
+var _voice_check := 0.0
+var _voice_game_time := 0.0
+
+
+## In games Rico uses the old Windows voice; after a minute in a game his real voice
+## unloads so the graphics card is all yours, and it comes back when you stop.
+func _voice_tick(delta: float) -> void:
+	_voice_check -= delta
+	if _voice_check > 0:
+		return
+	_voice_check = 5.0
+	if not voice_out.installed() or not voice_out.wanted():
+		return
+	if games.current() != "":
+		_voice_game_time += 5.0
+		if _voice_game_time >= 60.0 and voice_out._llm_pid > 0:
+			voice_out.stop_servers()
+	else:
+		if _voice_game_time >= 60.0 and int(Cfg.g("speak_replies", 1)) > 0:
+			voice_out.warm_up()
+		_voice_game_time = 0.0
+
+
+func _on_voice_downloaded(ok: bool) -> void:
+	settings.set_voice_status("" if ok else "Download failed. Try again?")
+	settings.refresh_voice()
+	if ok:
+		_say("New voice installed. Go on, admit it. I sound amazing.", 8)
+		voice.speak("New voice installed. <chuckle> Go on, admit it. I sound amazing.")
+	else:
+		_say("My new voice didn't download. Blame the internet. Try again in Settings > Voice.", 8)
+
+
 func _on_game_started(g: String) -> void:
 	var e: Dictionary = games.entry(g)
 	var first := int(e.get("played_min", 0)) == 0
@@ -2051,6 +2138,7 @@ func _on_landed() -> void:
 	sfx.play("thud", 1.0, 0.6)
 	if _pong_count >= 2:
 		rico.set_mood("happy", 2.0)
+		voice_out.noise("whoa")
 		if randf() < 0.6:
 			_say(Lines.pick(Lines.FLUNG), 4)
 	else:
@@ -2104,9 +2192,11 @@ func _process(delta: float) -> void:
 	rico.look_at_pos = mouse
 	if bubble.is_open() and not bubble.typing and bubble.chat_mode and mouse.distance_to(rico.position) > 600:
 		rico.look_at_pos = bubble.position + bubble.size * 0.5
-	rico.talking = bubble.is_open() and bubble.typing and bubble._full_text != "..."
+	rico.talking = (bubble.is_open() and bubble.typing and bubble._full_text != "...") or voice_out.playing
+	rico.voice_level = voice_out.level()
+	_voice_tick(delta)
 	rico.thinking = (ai.busy or voice.busy or bubble._full_text.ends_with("...")) and not _approval_pending
-	if rico.talking and Cfg.g("talk_blips"):
+	if rico.talking and Cfg.g("talk_blips") and not voice_out.playing:
 		_blip_acc += delta
 		if _blip_acc > 0.075:
 			_blip_acc = 0.0
@@ -2147,6 +2237,8 @@ func _process(delta: float) -> void:
 		if _quip_timer <= 0 and chat > 0:
 			_quip_timer = _next_quip_delay()
 			_say(Lines.pick(Lines.IDLE), 6)
+			if randf() < 0.45:
+				voice_out.noise(Lines.pick(["heh", "hmm", "pfft", "huh"]))
 	_kind_time += delta
 	_tip_cooldown -= delta
 	if Cfg.g("app_tips") and _fg_kind != "" and _kind_time > 150.0 and _tip_cooldown <= 0 and not bubble.is_open() and win.visible and rico.state != RicoScript.State.SLEEP:
@@ -2272,9 +2364,11 @@ func _on_rico_clicked() -> void:
 	if rico.docked:
 		_wake_up()
 		_say(Lines.pick(["You rang?", "Back from my little corner. What's up?", "Ta-da. Hologram deployed."]), 4)
+		voice_out.noise("tada")
 		return
 	if rico.state == RicoScript.State.SLEEP:
 		rico.wake()
+		voice_out.noise("yawn")
 		_say(Lines.pick(Lines.WAKE), 4)
 		return
 	if bubble.is_open() and bubble.chat_mode:
@@ -2283,6 +2377,8 @@ func _on_rico_clicked() -> void:
 	if bubble.is_busy_with_user():
 		return
 	rico.sq = 0.85
+	if randf() < 0.5:
+		voice_out.noise(Lines.pick(["yeah", "huh", "oi"]))
 	_open_chat()
 
 
