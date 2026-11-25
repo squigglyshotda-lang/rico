@@ -696,25 +696,46 @@ func _open_settings(tab := 0) -> void:
 
 # ------------------------------------------------------------------ visibility
 
+# Rico never hides his actual window: on Windows, hiding and re-showing a see-through
+# window can make it come back as a black box. Instead he stops drawing and lets every
+# click through.
+var _soft_hidden := false
+
+
+func _shown() -> bool:
+	return not _soft_hidden
+
+
+func _set_soft_hidden(on: bool) -> void:
+	if on == _soft_hidden:
+		return
+	_soft_hidden = on
+	rico.visible = not on
+	if on:
+		bubble.hide_bubble()
+		if search.visible:
+			search.close()
+	else:
+		get_window().always_on_top = true
+	_update_region(true)
+
+
 func _toggle_visible() -> void:
-	if get_window().visible:
+	if _shown():
 		_hide_for(-1)
 	else:
 		_show()
 
 
 func _hide_for(seconds: float) -> void:
-	bubble.hide_bubble()
-	get_window().visible = false
+	_set_soft_hidden(true)
 	_hidden_until = Time.get_ticks_msec() / 1000.0 + seconds if seconds > 0 else -1.0
 
 
 func _show() -> void:
 	_hidden_until = -1.0
-	if not get_window().visible:
-		get_window().visible = true
-		get_window().always_on_top = true
-		_update_region(true)
+	if not _shown():
+		_set_soft_hidden(false)
 		rico.waving = 1.5
 		_say("Miss me?", 3)
 
@@ -1679,7 +1700,7 @@ func _on_bubble_action(id: String) -> void:
 func _on_hotkey(name: String) -> void:
 	match name:
 		"chat":
-			if bubble.is_open() and bubble.chat_mode and get_window().visible:
+			if bubble.is_open() and bubble.chat_mode and _shown():
 				bubble.hide_bubble()
 			else:
 				_open_chat()
@@ -1813,14 +1834,11 @@ func _set_fs_hidden(on: bool) -> void:
 		return
 	_fs_hidden = on
 	if on:
-		if get_window().visible:
-			bubble.hide_bubble()
-			get_window().visible = false
+		if _shown():
+			_set_soft_hidden(true)
 	else:
-		if _hidden_until < 0 and not get_window().visible:
-			get_window().visible = true
-			get_window().always_on_top = true
-			_update_region(true)
+		if _hidden_until < 0 and not _shown():
+			_set_soft_hidden(false)
 		for t in _fs_queue:
 			_say(t, 12)
 		_fs_queue.clear()
@@ -2059,7 +2077,8 @@ func _on_focus_rect(r: Rect2i, exe_path: String) -> void:
 			_game_time = 0.0
 			_game_tip_timer = 600.0
 			_on_game_started(g)
-	_check_fullscreen(r)
+	# the desktop itself (and Explorer) covers the whole screen but isn't "fullscreen"
+	_check_fullscreen(Rect2i() if exe in ["explorer.exe", "rico.exe", ""] else r)
 	if r.size.x <= 0:
 		_fg_rect = Rect2()
 		exe = "desktop"
@@ -2309,6 +2328,11 @@ func _next_tip(kind: String) -> String:
 
 
 func _update_region(force := false) -> void:
+	if _soft_hidden:
+		if force or _last_region.size != Vector2.ONE:
+			_last_region = Rect2(0, 0, 1, 1)
+			DisplayServer.window_set_mouse_passthrough(PackedVector2Array([Vector2.ZERO, Vector2(1, 0), Vector2.ONE, Vector2(0, 1)]))
+		return
 	var r: Rect2 = rico.visual_rect(70.0)
 	if _ghost > 0.97 and not bubble.visible and not search.visible:
 		r = Rect2(0, 0, 1, 1)   # faded out: let every click through
